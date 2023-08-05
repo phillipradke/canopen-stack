@@ -22,6 +22,18 @@ extern "C" {
 #endif
 
 /******************************************************************************
+* MACROS 
+******************************************************************************/
+#define WRITE_BITFIELD(offset, mask, value)         (((value)&(mask))<<(offset))
+#define CLEAR_BITFIELD(offset,mask)                 SET_BITFIELD(offset,mask,0)
+#define CLEAR_WRITE_BITFIELD(offset,mask,value,bitfield)    \
+    do{                                                     \
+        bitfield &= CLEAR_BITFIELD(offset,mask);            \
+        bitfield |= WRITE_BITFIELD(offset,mask,value);      \
+    } while(0)
+#define READ_BITFIELD(offset, mask, byte)           (((byte)>>(offset))&(mask)) 
+        
+/******************************************************************************
 * INCLUDES
 ******************************************************************************/
 

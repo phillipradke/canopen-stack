@@ -23,6 +23,100 @@
 #if USE_CSDO
 
 /******************************************************************************
+* PRIVATE CONSTANTS 
+******************************************************************************/
+// Bit definitions
+// Client Command Specifier 
+#define CMD_CSS_BIT_OFFSET                                  7
+#define CMD_CSS_MASK                                        0b111
+#define CMD_CCS_BLOCK_DOWNLOAD                              6
+#define CMD_CCS_BLOCK_UPLOAD                                5
+
+// Server Command Specifier
+#define CMD_SCS_BIT_OFFSET                                  5
+#define CMD_SCS_MASK                                        0b111
+#define CMD_SCS_BLOCK_DOWNLOAD                              5
+#define CMD_SCS_BLOCK_UPLOAD                                6
+
+// Client Subcommand
+#define BLOCK_DOWNLOAD_CMD_CS_BIT_OFFSET                    0
+#define BLOCK_DOWNLOAD_CMD_CS_MASK                          0b1
+#define BLOCK_DOWNLOAD_CMD_CS_INITIATE_DOWNLOAD_REQUEST     0
+#define BLOCK_DOWNLOAD_CMD_CS_END_BLOCK_DOWNLOAD_REQUEST    1
+
+// Server Subcommand
+#define BLOCK_DOWNLOAD_CMD_SS_BIT_OFFSET                    0
+#define BLOCK_DOWNLOAD_CMD_SS_MASK                          0b11
+#define BLOCK_DOWNLOAD_CMD_SS_INITIATE_DOWNLOAD_RESPONSE    0
+#define BLOCK_DOWNLOAD_CMD_SS_END_BLOCK_DOWNLOAD_RESPONSE   1
+#define BLOCK_DOWNLOAD_CMD_SS_BLOCK_DOWNLOAD_RESPONSE       2
+
+// Client Subcommand Upload
+#define BLOCK_UPLOAD_CMD_CS_BIT_OFFSET                      0
+#define BLOCK_UPLOAD_CMD_CS_MASK                            0b11
+#define BLOCK_UPLOAD_CMD_CS_INITIATE_UPLOAD_REQUEST         0
+#define BLOCK_UPLOAD_CMD_CS_END_BLOCK_UPLOAD_REQUEST        1
+#define BLOCK_UPLOAD_CMD_CS_BLOCK_UPLOAD_RESPONSE           2
+#define BLOCK_UPLOAD_CMD_CS_START_UPLOAD                    3
+
+// Server Subcommand Upload
+#define BLOCK_UPLOAD_CMD_SS_BIT_OFFSET                      0
+#define BLOCK_UPLOAD_CMD_SS_MASK                            0b1
+#define BLOCK_UPLOAD_CMD_SS_INITIATE_UPLOAD_RESPONSE        0
+#define BLOCK_UPLOAD_CMD_SS_END_BLOCK_UPLOADE_RESPONSE      1
+
+// Size Indicator
+#define CMD_S_BIT_OFFSET                                    1
+#define CMD_S_MASK                                          0b1
+#define CMD_S_DATA_SET_SIZE_NOT_INDICATED                   0
+#define CMD_S_DATA_SET_SIZE_IS_INDICATED                    1
+
+// Client CRC support
+#define CMD_CC_BIT_OFFSET                                   2
+#define CMD_CC_MASK                                         0b1
+#define CMD_CC_CLIENT_DOES_NOT_SUPPORT_CRC_GENERATION       0
+#define CMD_CC_CLIENT_SUPPORTS_CRC_GENERATION               1
+
+// Continuation Bit
+#define CMD_C_BIT_OFFSET                                    7
+#define CMD_C_OFFSET                                        0b1
+#define CMD_C_MORE_SEGMENTS_TO_BE_DOWNLOADED                0
+#define CMD_C_NO_MORE_SEGMENTS_TO_BE_DOWNLOADED             1
+
+// Sequence Number
+#define CMD_SEQNUM_BIT_OFFSET                               0
+#define CMD_SEQNUM_MASK                                     0b1111111
+
+/***** byte offsets **********************************************************/
+#define FRM_CMD_BYTE_OFFSET                                 0
+#define FRM_CMD_BYTE_SIZE                                   1
+
+#define FRM_M_BYTE_OFFSET                                   1
+#define FRM_M_BYTE_SIZE                                     3
+
+#define BLOCK_FRM_SIZE_BYTE_OFFSET                          4
+#define BLOCK_FRM_SIZE_BYTE_SIZE                            4
+
+#define BLOCK_INIT_FRM_BLKSIZE_BYTE_OFFSET                  4
+#define BLOCK_INIT_FRM_BLKSIZE_BYTE_SIZE                    1
+
+#define BLOCK_FRM_SEG_DATA_BYTE_OFFSET                      1
+#define BLOCK_FRM_SEG_DATA_BTYE_SIZE                        7
+
+#define BLOCK_FRM_ACKSEQ_BYTE_OFFSET                        1
+#define BLOCK_FRM_ACKSEQ_BYTE_SIZE                          1
+
+#define BLOCK_FRM_SUBBLOCK_BLKSIZE_BYTE_OFFSET              2
+#define BLOCK_FRM_SUBBLOCK_BLKSIZE_BYTE_SIZE                1
+
+#define BLOCK_FRM_CRC_BYTE_OFFSET                           1
+#define BLOCK_FRM_CRC_BYTE_SIZE                             2
+
+#define BLOCK_FRM_PST_BYTE_OFFSET                           5
+#define BLOCK_FRM_PST_BYTE_SIZE                             2
+
+
+/******************************************************************************
 * PRIVATE FUNCTIONS
 ******************************************************************************/
 
