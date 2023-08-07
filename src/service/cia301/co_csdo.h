@@ -71,6 +71,8 @@ typedef enum {
     CO_CSDO_TRANSFER_DOWNLOAD = 2,   /*!< SDO download is being executed     */
     CO_CSDO_TRANSFER_UPLOAD_SEGMENT = 3,  /*!< SDO segment upload is being executed     */
     CO_CSDO_TRANSFER_DOWNLOAD_SEGMENT = 4, /*!< SDO segment download is being executed     */
+    CO_CSDO_TRANSFER_UPLOAD_BLOCK   = 5,    /*!< SDO block uploade is being executed    */
+    CO_CSDO_TRANSFER_DOWNLOAD_BLOCK = 6,    /*!< SDO block download is being executed   */
 
 } CO_CSDO_TRANSFER_TYPE;
 
@@ -134,6 +136,15 @@ typedef struct CO_CSDO_TRANSFER_T {
     uint8_t                TBit;        /*!< Segment toggle bit              */
 } CO_CSDO_TRANSFER;
 
+typedef struct CO_CSDO_BLOCK_T {
+    uint8_t                *Buf;        /*!< Reference to transfered data    */
+    uint32_t               Size;        /*!< Transfered data size            */
+    uint32_t               Index;       /*!< Index of buffer being transfered*/
+    uint32_t               Blk_Offset;  /*!< Starting index of sub-block     */
+    uint8_t                Block_Size   /*!< Max number of segments in block */
+    uint8_t                C_Bit;       
+} CO_CSDO_BLOCK;
+
 /*! \brief SDO CLIENT
  *
  *   This structure contains information required for SDO client
@@ -147,6 +158,7 @@ typedef struct CO_CSDO_T {
     uint8_t           NodeId;           /*!< Node-Id of addressed SDO server */
     CO_CSDO_STATE     State;            /*!< Current CSDO state              */
     CO_CSDO_TRANSFER  Tfer;             /*!< Current CSDO transfer info      */
+    CO_CSDO_BLOCK     Block;
 } CO_CSDO;
 
 /******************************************************************************

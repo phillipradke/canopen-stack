@@ -129,6 +129,9 @@ static CO_ERR COCSdoUploadSegmented        (CO_CSDO *csdo);
 static CO_ERR COCSdoInitDownloadSegmented  (CO_CSDO *csdo);
 static CO_ERR COCSdoDownloadSegmented      (CO_CSDO *csdo);
 static CO_ERR COCSdoFinishDownloadSegmented(CO_CSDO *csdo);
+static CO_ERR COCSdoInitDownloadBlock      (CO_CSDO *csdo);
+static CO_ERR COCSdoDownloadBlockEnd       (CO_CSDO *csdo);
+static CO_ERR COCSdoDownloadBlock          (CO_CSDO *csdo);
 static void   COCSdoAbort                  (CO_CSDO *csdo, uint32_t err);
 static void   COCSdoTransferFinalize       (CO_CSDO *csdo);
 static void   COCSdoTimeout                (void *parg);
@@ -406,6 +409,74 @@ static CO_ERR COCSdoUploadSegmented(CO_CSDO *csdo)
     return result;
 }
 
+static CO_ERR COCSdoInitDownloadBlock (CO_CSDO *csdo)
+{
+    CO_ERR    result = CO_ERR_SDO_SILENT;
+    uint32_t  ticks;
+    uint16_t  Idx;
+    uint8_t   Sub;
+
+    Idx = CO_GET_WORD(csdo->Frm, 1u);
+    Sub = CO_GET_BYTE(csdo->Frm, 3u);
+    if ((Idx == csdo->Tfer.Idx) &&
+        (Sub == csdo->Tfer.Sub)) {
+        
+        // read the block size value returned from server before clearing the frame
+        csdo->Block.Block_Size = CO_GET_BYTE(csdo->Frm, BLOCK_INIT_FRM_BLKSIZE_BYTE_OFFSET);
+
+        CO_SET_ID  (&frm, csdo->TxId);
+        CO_SET_DLC (&frm, 8u);
+        CO_SET_LONG(&frm, 0, 0u);
+        CO_SET_LONG(&frm, 0, 4u);
+
+        // TODO: handle error or pass it back to caller?
+        result = COCSdoDownloadBlockSendSubBlock(csdo);
+
+    } else {
+        COCSdoAbort(csdo, CO_SDO_ERR_TBIT); 
+        COCSdoTransferFinalize(csdo);
+    }
+
+    return result;
+}
+
+static CO_ERR COCSdoDownloadBlockSendSubBlock(CO_CSDO *csdo){
+    CO_ERR    result = CO_ERR_SDO_SILENT;
+    uint32_t  ticks;
+    uint8_t   Num_Segs;
+    CO_IF_FRM frm;
+    uint8_t   cmd;
+    CO_CSDO_BLOCK *block = csdo->Block;
+
+    while (Seg_Num < block->Block_Size) {
+        uint8_t size = block->Size - block->Index;
+        if (size > BLOCK_FRM_SEG_DATA_BYTE_SIZE) {
+            block->C_Bit = CMD_C_MORE_SEGMENTS_TO_BE_DOWNLOADED;
+            size = BLOCK_FRM_SEG_DATA_BYTE_SIZE;
+        } else {
+            block->C_Bit = CMD_C_NO_MORE_SEGMENTS_TO_BE_DOWNLOADED;  
+        }
+        for (int i = 0; i < size; i++) {
+            CO_SET_BYTE(&frm, Block->Buf[Block->Index++],BLOCK_INIT_FRM_BLKSIZE_BYTE_OFFSET + i );
+        }
+        if (block->C_Bit == CMD_C_MORE_SEGMENTS_TO_BE_DOWNLOADED) { 
+            CLEAR_WRITE_BITFIELD( CMD_C_BIT_OFFSET, CMD_C_BIT_MASK, CMD_C_MORE_SEGMENTS_TO_BE_DOWNLOADED, cmd);
+        } else {
+            CLEAR_WRITE_BITFIELD( CMD_C_BIT_OFFSET, CMD_C_BIT_MASK, CMD_C_NO_MORE_SEGMENTS_TO_BE_DOWNLOADED, cmd);
+            break;
+   }
+
+       /* refresh timer */
+        (void)COTmrDelete(&(csdo->Node->Tmr), csdo->Tfer.Tmr);
+        ticks = COTmrGetTicks(&(csdo->Node->Tmr), csdo->Tfer.Tmt, CO_TMR_UNIT_1MS);
+        csdo->Tfer.Tmr = COTmrCreate(&(csdo->Node->Tmr), ticks, 0, &COCSdoTimeout, csdo);
+
+        (void)COIfCanSend(&csdo->Node->If, &frm);
+}
+
+//static CO_ERR COCSdoDownloadBlockEnd       (CO_CSDO *csdo);
+//static CO_ERR COCSdoDownloadBlock          (CO_CSDO *csdo);
+
 static CO_ERR COCSdoInitDownloadSegmented(CO_CSDO *csdo)
 {
     CO_ERR    result = CO_ERR_SDO_SILENT;
@@ -594,7 +665,27 @@ CO_ERR COCSdoResponse(CO_CSDO *csdo)
         }
     }
 
-    if (csdo->Tfer.Type == CO_CSDO_TRANSFER_UPLOAD_SEGMENT) {
+    if (csdo->Tfer.Type == CO_CSDO_TRANSFER_UPLOAD_BLOCK) {
+        // TODO: Implement Block upload
+    } else if (csdo->Tfer.Type == CO_CSDO_TRANSFER_DOWNLOAD_BLOCK) {
+        uint8_t scs = READ_BITFIELD(CMD_SCS_BIT_OFFSET,CMD_SCS_MASK, cmd);
+        uint8_t ss = READ_BITFIELD(CMD_SS_BIT_OFFSET, CMD_SS_MASK, cmd);
+        if (scs == CMD_SCS_BLOCK_DOWNLOAD) {
+            if (ss == BLOCK_DOWNLOAD_CMD_SS_INITIATE_DOWNLOAD_RESPONSE) {
+                (void)COCSdoInitDownloadBlock(csdo);
+            } else if (ss == BLOCK_DOWNLOAD_CMD_SS_BLOCK_DOWNLOAD_RESPONSE) {
+                (void)COCSdoDownloadBlock(csdo);
+            } else if (ss == BLOCK_DOWNLOAD_CMD_SS_END_BLOCK_DOWNLOAD_RESPONSE) {
+                (void)COCSdoDownloadBlockEnd(csdo);
+            } else {
+                COCSdoAbort(csdo, CO_SDO_ERR_CMD);
+                COCSdoTransferFinalize(csdo);
+            }
+        } else {
+            COCSdoAbort(csdo, CO_SDO_ERR_CMD);
+            COCSdoTransferFinalize(csdo);
+        }
+     } else if (csdo->Tfer.Type == CO_CSDO_TRANSFER_UPLOAD_SEGMENT) {
         if (cmd == 0x41u) {
             (void)COCSdoInitUploadSegmented(csdo);
         } else if ((cmd & 0xE0u) == 0x00u) {
