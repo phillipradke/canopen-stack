@@ -38,13 +38,13 @@
 #define CMD_SCS_BLOCK_DOWNLOAD                              5
 #define CMD_SCS_BLOCK_UPLOAD                                6
 
-// Client Subcommand
+// Client Subcommand download
 #define BLOCK_DOWNLOAD_CMD_CS_BIT_OFFSET                    0
 #define BLOCK_DOWNLOAD_CMD_CS_MASK                          0b1
 #define BLOCK_DOWNLOAD_CMD_CS_INITIATE_DOWNLOAD_REQUEST     0
 #define BLOCK_DOWNLOAD_CMD_CS_END_BLOCK_DOWNLOAD_REQUEST    1
 
-// Server Subcommand
+// Server Subcommand download
 #define BLOCK_DOWNLOAD_CMD_SS_BIT_OFFSET                    0
 #define BLOCK_DOWNLOAD_CMD_SS_MASK                          0b11
 #define BLOCK_DOWNLOAD_CMD_SS_INITIATE_DOWNLOAD_RESPONSE    0
@@ -87,6 +87,10 @@
 #define CMD_SEQNUM_BIT_OFFSET                               0
 #define CMD_SEQNUM_MASK                                     0b1111111
 
+// non data bytes in final frame
+#define CMD_N_BIT_OFFSET                                    2
+#define CMD_N_BIT_MASK                                      3
+
 /***** byte offsets **********************************************************/
 #define FRM_CMD_BYTE_OFFSET                                 0
 #define FRM_CMD_BYTE_SIZE                                   1
@@ -101,7 +105,7 @@
 #define BLOCK_INIT_FRM_BLKSIZE_BYTE_SIZE                    1
 
 #define BLOCK_FRM_SEG_DATA_BYTE_OFFSET                      1
-#define BLOCK_FRM_SEG_DATA_BTYE_SIZE                        7
+#define BLOCK_FRM_SEG_DATA_BYTE_SIZE                        7
 
 #define BLOCK_FRM_ACKSEQ_BYTE_OFFSET                        1
 #define BLOCK_FRM_ACKSEQ_BYTE_SIZE                          1
@@ -115,6 +119,9 @@
 #define BLOCK_FRM_PST_BYTE_OFFSET                           5
 #define BLOCK_FRM_PST_BYTE_SIZE                             2
 
+/***** Other constants *******************************************************/
+#define DONT_GENERATE_CRC         CMD_CC_CLIENT_DOES_NOT_SUPPORT_CRC_GENERATION
+#define GENERATE_CRC              CMD_CC_CLIENT_SUPPORTS_CRC_GENERATION        
 
 /******************************************************************************
 * PRIVATE FUNCTIONS
@@ -469,6 +476,9 @@ static CO_ERR COCSdoDownloadBlockSendSubBlock(CO_CSDO *csdo){
         // write C bit to cmd byte
         CLEAR_WRITE_BITFIELD( CMD_C_BIT_OFFSET, CMD_C_BIT_MASK, block->C_Bit, cmd);
 
+        // write cmd byte to frame
+        CO_SET_BYTE(&frm, cmd, FRM_CMD_BYTE_OFFSET);
+
         // write data to frame
         for (int i = 0; i < size; i++) {
             CO_SET_BYTE(&frm, Block->Buf[Block->Index++],BLOCK_INIT_FRM_BLKSIZE_BYTE_OFFSET + i );
@@ -486,11 +496,67 @@ static CO_ERR COCSdoDownloadBlockSendSubBlock(CO_CSDO *csdo){
         if (block->C_Bit == CMD_C_NO_MORE_SEGMENTS_TO_BE_DOWNLOADED) { 
             break;
         }
-   }
+    }
+    block->Num_Segs_Sent = Seg_Num;
+    return result;
+}
+
+static CO_ERR COCSdoDownloadBlock(CO_CSDO *csdo) {
+    // SCS and SC bits have already been checked before calling this function
+
+    CO_ERR    result = CO_ERR_SDO_SILENT;
+    uint8_t   cmd = 0;
+    uint8_t   n;
+    CO_IF_FRM frm;
+    CO_CSDO_BLOCK   *block = csdo->Block;
+
+    // read the ackseq and blksize bytes from the frame
+    uint8_t ackseq = CO_GET_BYTE(csdo->Frm, BLOCK_FRM_ACKSEQ_BYTE_OFFSET);
+    uint8_t blksize = CO_GET_BYTE(csdo->Frm, BLOCK_FRM_SUBBLOCK_BLKSIZE_BYTE_OFFSET);
+
+    block->Index = block->Blk_Offset + (ackseq * BLOCK_FRM_SEG_DATA_BYTE_SIZE);
+    if (block->Index >= block->Size) {
+        // all data has been successfuly recieved by server
+        // TODO: send end frame;
+        cmd = WRITE_BITFIELD(
+                CMD_CCS_BIT_OFFSET, 
+                CMD_CSS_MASK, 
+                CMD_CSS_BLOCK_DOWNLOAD);
+
+        // calculate and write the number of bytes that do not contain data in last segment
+        n = BLOCK_FRM_SEG_DATA_BYTE_SIZE - block->Data_Bytes_Frm;
+        cmd |= WRITE_BITFIELD(
+                CMD_N_BIT_OFFSET, 
+                CMD_N_BIT_MASK, 
+                n);
+
+        // write the cs bits
+        cmd |= WRITE_BITFIELD(
+                BLOCK_DOWNLOAD_CMD_CS_BIT_OFFSET,
+                BLOCK_DOWNLOAD_CMD_CS_BIT_MASK,
+                BLOCK_DOWNLOAD_CMD_CS_END_BLOCK_DOWNLOAD_REQUEST);
+
+        if (block->CRC == GENERATE_CRC) { 
+            // TODO: write CRC 
+        }
+        
+        // send the frame
+        /* refresh timer */
+        (void)COTmrDelete(&(csdo->Node->Tmr), csdo->Tfer.Tmr);
+        ticks = COTmrGetTicks(&(csdo->Node->Tmr), csdo->Tfer.Tmt, CO_TMR_UNIT_1MS);
+        csdo->Tfer.Tmr = COTmrCreate(&(csdo->Node->Tmr), ticks, 0, &COCSdoTimeout, csdo);
+
+        (void)COIfCanSend(&csdo->Node->If, &frm);
+
+    } else {
+        // update the block size just in case it changed
+        block->Block_Size = blksize;
+        result = COCSdoDownloadBlockSendSubBlock(CO_CSDO *csdo);
+    }
+    return result;
 }
 
 //static CO_ERR COCSdoDownloadBlockEnd       (CO_CSDO *csdo);
-//static CO_ERR COCSdoDownloadBlock          (CO_CSDO *csdo);
 
 static CO_ERR COCSdoInitDownloadSegmented(CO_CSDO *csdo)
 {

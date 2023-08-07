@@ -144,6 +144,7 @@ typedef struct CO_CSDO_BLOCK_T {
     uint8_t                Block_Size   /*!< Max number of segments in block */
     uint8_t                C_Bit;       
     uint8_t                Data_Bytes_Frm; 
+    uint8_t                CRC;     
 } CO_CSDO_BLOCK;
 
 /*! \brief SDO CLIENT
