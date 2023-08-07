@@ -448,30 +448,45 @@ static CO_ERR COCSdoDownloadBlockSendSubBlock(CO_CSDO *csdo){
     uint8_t   cmd;
     CO_CSDO_BLOCK *block = csdo->Block;
 
-    while (Seg_Num < block->Block_Size) {
-        uint8_t size = block->Size - block->Index;
+    uint8_t Seg_Num;
+    for (Seg_Num = 1; Seg_Num < block->Block_Size; Seg_Num++) { 
+
+        // write the sequence number to the cmd byte
+        cmd = WRITE_BITFIELD(CMD_SEQNUM_BIT_OFFSET, CMD_SEQNUM_MASK, Seg_Num);
+        
+        // determine size of data to send in segment and if last
+        uint32_t size = block->Size - block->Index;
         if (size > BLOCK_FRM_SEG_DATA_BYTE_SIZE) {
             block->C_Bit = CMD_C_MORE_SEGMENTS_TO_BE_DOWNLOADED;
             size = BLOCK_FRM_SEG_DATA_BYTE_SIZE;
         } else {
             block->C_Bit = CMD_C_NO_MORE_SEGMENTS_TO_BE_DOWNLOADED;  
         }
+        
+        // save the number of data bytes send for use in end stage
+        Block->Data_Bytes_Frm = size;
+
+        // write C bit to cmd byte
+        CLEAR_WRITE_BITFIELD( CMD_C_BIT_OFFSET, CMD_C_BIT_MASK, block->C_Bit, cmd);
+
+        // write data to frame
         for (int i = 0; i < size; i++) {
             CO_SET_BYTE(&frm, Block->Buf[Block->Index++],BLOCK_INIT_FRM_BLKSIZE_BYTE_OFFSET + i );
         }
-        if (block->C_Bit == CMD_C_MORE_SEGMENTS_TO_BE_DOWNLOADED) { 
-            CLEAR_WRITE_BITFIELD( CMD_C_BIT_OFFSET, CMD_C_BIT_MASK, CMD_C_MORE_SEGMENTS_TO_BE_DOWNLOADED, cmd);
-        } else {
-            CLEAR_WRITE_BITFIELD( CMD_C_BIT_OFFSET, CMD_C_BIT_MASK, CMD_C_NO_MORE_SEGMENTS_TO_BE_DOWNLOADED, cmd);
-            break;
-   }
 
-       /* refresh timer */
+        // send the frame
+        /* refresh timer */
         (void)COTmrDelete(&(csdo->Node->Tmr), csdo->Tfer.Tmr);
         ticks = COTmrGetTicks(&(csdo->Node->Tmr), csdo->Tfer.Tmt, CO_TMR_UNIT_1MS);
         csdo->Tfer.Tmr = COTmrCreate(&(csdo->Node->Tmr), ticks, 0, &COCSdoTimeout, csdo);
 
         (void)COIfCanSend(&csdo->Node->If, &frm);
+
+        // break if last segment
+        if (block->C_Bit == CMD_C_NO_MORE_SEGMENTS_TO_BE_DOWNLOADED) { 
+            break;
+        }
+   }
 }
 
 //static CO_ERR COCSdoDownloadBlockEnd       (CO_CSDO *csdo);
