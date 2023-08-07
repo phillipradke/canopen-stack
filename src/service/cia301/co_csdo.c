@@ -516,8 +516,7 @@ static CO_ERR COCSdoDownloadBlock(CO_CSDO *csdo) {
 
     block->Index = block->Blk_Offset + (ackseq * BLOCK_FRM_SEG_DATA_BYTE_SIZE);
     if (block->Index >= block->Size) {
-        // all data has been successfuly recieved by server
-        // TODO: send end frame;
+        // all data has been successfuly recieved by server, send end frame
         cmd = WRITE_BITFIELD(
                 CMD_CCS_BIT_OFFSET, 
                 CMD_CSS_MASK, 
@@ -551,12 +550,20 @@ static CO_ERR COCSdoDownloadBlock(CO_CSDO *csdo) {
     } else {
         // update the block size just in case it changed
         block->Block_Size = blksize;
+        // send the next block
         result = COCSdoDownloadBlockSendSubBlock(CO_CSDO *csdo);
     }
     return result;
 }
 
-//static CO_ERR COCSdoDownloadBlockEnd       (CO_CSDO *csdo);
+static CO_ERR COCSdoDownloadBlockEnd(CO_CSDO *csdo) {
+    // calling function already checked for scs and ss
+    // if we got here, we got a successful download to the server so just need
+    // to finalize and close the SDO session. 
+
+    COCSdoTransferFinalize(csdo);
+    return CO_ERR_SDO_SILENT;
+}
 
 static CO_ERR COCSdoInitDownloadSegmented(CO_CSDO *csdo)
 {
@@ -888,12 +895,35 @@ CO_ERR COCSdoRequestUpload(CO_CSDO *csdo,
     return CO_ERR_NONE;
 }
 
+// legacy segmented / expedited
 CO_ERR COCSdoRequestDownload(CO_CSDO *csdo,
                              uint32_t key,
                              uint8_t *buffer,
                              uint32_t size,
                              CO_CSDO_CALLBACK_T callback,
-                             uint32_t timeout)
+                             uint32_t timeout) {
+    COCSdoRequestDownloadFull(csdo, key, buffer, size, callback, timeout, false, false);
+}
+
+// block download
+CO_ERR COCSdoRequestDownload(CO_CSDO *csdo,
+                             uint32_t key,
+                             uint8_t *buffer,
+                             uint32_t size,
+                             CO_CSDO_CALLBACK_T callback,
+                             uint32_t timeout,
+                             bool crc) {
+    COCSdoRequestDownloadFull(csdo, key, buffer, size, callback, timeout, true, crc);
+}
+
+CO_ERR COCSdoRequestDownloadFull(CO_CSDO *csdo,
+                             uint32_t key,
+                             uint8_t *buffer,
+                             uint32_t size,
+                             CO_CSDO_CALLBACK_T callback,
+                             uint32_t timeout,
+                             bool block,
+                             bool CRC)
 {
     CO_IF_FRM frm;
     uint8_t   cmd;
@@ -934,7 +964,34 @@ CO_ERR COCSdoRequestDownload(CO_CSDO *csdo,
     csdo->Tfer.Buf_Idx = 0;
     csdo->Tfer.TBit    = 0;
 
-    if (size <= (uint32_t)4u) {
+    if (bool == true) {
+        csdo->Tfer.Type = CO_CSDO_TRANSFER_DOWNLOAD_BLOCK;
+        
+        cmd = WRITE_BITFIELD(   CMD_CCS_BIT_OFFSET,
+                                CMD_CSS_BIT_MASK,
+                                CMD_CSS_BLOCK_DOWNLOAD);
+        if (crc == true) {
+            CLEAR_WRITE_BITFIELD(   CMD_CC_BIT_OFFSET,
+                                    CMD_CC_BIT_MASK,
+                                    CMD_CC_CLIENT_SUPPORTS_CRC_GENERATION,
+                                    cmd);
+        } else {
+            CLEAR_WRITE_BITFIELD(   CMD_CC_BIT_OFFSET,
+                                    CMD_CC_BIT_MASK,
+                                    CMD_CC_CLIENT_DOES_NOT_SUPPORTS_CRC_GENERATION,
+                                    cmd);
+        }
+        cmd |= WRITE_BITFIELD(  CMD_S_BIT_OFFSET,
+                                CMD_S_BIT_MASK,
+                                CMD_S_DATA_SET_SIZE_IS_INDICATED);
+
+        cmd |= WRITE_BITFIELD(  BLOCK_DOWNLOAD_CMD_CS_BIT_OFFSET,
+                                BLOCK_DOWNLOAD_CMD_CS_MASK,
+                                BLOCK_DOWNLOAD_CMD_CS_INITIATE_DOWNLOAD_REQUEST);
+        // set the size bytes
+        CO_SET_LONG(&frm, size, BLOCK_FRM_SIZE_BYTE_OFFSET);
+    }
+    else if (size <= (uint32_t)4u) {
         csdo->Tfer.Type = CO_CSDO_TRANSFER_DOWNLOAD;
 
         cmd = ((0x23u) | ((4u - (uint8_t)size) << 2u));
