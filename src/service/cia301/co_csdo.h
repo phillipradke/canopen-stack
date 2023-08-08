@@ -21,18 +21,7 @@
 extern "C" {
 #endif
 
-/******************************************************************************
-* MACROS 
-******************************************************************************/
-#define WRITE_BITFIELD(offset, mask, value)         (((value)&(mask))<<(offset))
-#define CLEAR_BITFIELD(offset,mask)                 SET_BITFIELD(offset,mask,0)
-#define CLEAR_WRITE_BITFIELD(offset,mask,value,bitfield)    \
-    do{                                                     \
-        bitfield &= CLEAR_BITFIELD(offset,mask);            \
-        bitfield |= WRITE_BITFIELD(offset,mask,value);      \
-    } while(0)
-#define READ_BITFIELD(offset, mask, byte)           (((byte)>>(offset))&(mask)) 
-        
+       
 /******************************************************************************
 * INCLUDES
 ******************************************************************************/
@@ -141,7 +130,7 @@ typedef struct CO_CSDO_BLOCK_T {
     uint32_t               Size;        /*!< Transfered data size            */
     uint32_t               Index;       /*!< Index of buffer being transfered*/
     uint32_t               Blk_Offset;  /*!< Starting index of sub-block     */
-    uint8_t                Block_Size   /*!< Max number of segments in block */
+    uint8_t                Block_Size;  /*!< Max number of segments in block */
     uint8_t                C_Bit;       
     uint8_t                Data_Bytes_Frm; 
     uint8_t                CRC;     
@@ -251,6 +240,13 @@ CO_ERR COCSdoRequestDownload(CO_CSDO *csdo,
                              uint32_t size,
                              CO_CSDO_CALLBACK_T callback,
                              uint32_t timeout);
+CO_ERR COCSdoRequestDownloadBlock(CO_CSDO *csdo,
+                             uint32_t key,
+                             uint8_t *buffer,
+                             uint32_t size,
+                             CO_CSDO_CALLBACK_T callback,
+                             uint32_t timeout,
+                             bool crc);
 
 /******************************************************************************
 * PROTECTED API FUNCTIONS
