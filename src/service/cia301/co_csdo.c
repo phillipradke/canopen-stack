@@ -165,6 +165,7 @@ static CO_ERR COCSdoDownloadBlockSendSubBlock(CO_CSDO *csdo);
 static CO_ERR COCSdoDownloadBlock          (CO_CSDO *csdo);
 
 static CO_ERR COCSdoInitUploadBlock        (CO_CSDO *csdo);
+static CO_ERR COCSdoUploadSubBlockResponse (CO_CSDO *csdo);
 static CO_ERR COCSdoUploadSubBlock         (CO_CSDO *csdo);
 static CO_ERR COCSdoUploadEndBlock         (CO_CSDO *csdo);
 
@@ -656,6 +657,7 @@ static CO_ERR COCSdoInitUploadBlock(CO_CSDO *csdo){
     return result;
  }
 
+// TODO: add function call in timeout function?
 static CO_ERR COCSdoUploadSubBlockResponse(CO_CSDO *csdo) {
     CO_ERR    result = CO_ERR_SDO_SILENT;
     CO_IF_FRM frm;
@@ -717,9 +719,55 @@ static CO_ERR COCSdoUploadSubBlock(CO_CSDO *csdo)
     } else {
         // lost segment. skip until new sub-block starts
         // TODO: reset timer if successful read? Anything to force sending response?
+        // TODO: send SDO read error?
+        result = CO_ERR_SDO_READ;
     }
     // when last segement received
     // csdo->Block.State = BLOCK_STATE_END;
+    return result;
+}
+
+static CO_ERR COCSdoUploadEndBlock(CO_CSDO *csdo) {
+    CO_ERR    result = CO_ERR_SDO_SILENT;
+    CO_IF_FRM frm;
+
+    uint8_t cmd = CO_GET_BYTE(csdo->Frm, FRM_CMD_BYTE_OFFSET);
+    uint8_t n = READ_BITFIELD(CMD_N_BIT_OFFSET, CMD_N_MASK, cmd);
+
+    if ( (BLOCK_FRM_SEG_DATA_BYTE_SIZE - n) != csdo->BlkUp.BytesLastSeg) {
+        // number of bytes sent in final segment doesn't match number read, send abort
+        COCSdoAbort(csdo, CO_SDO_ERR_TBIT); 
+        COCSdoTransferFinalize(csdo);
+        return CO_ERR_SDO_ABORT;
+    } 
+    if (csdo->BlkUp.CRC == GENERATE_CRC) {
+        uint16_t crcFromServer = CO_GET_WORD(csdo->Frm, BLOCK_FRM_CRC_BYTE_OFFSET);
+        uint16_t crcCalculated = 0; // TODO: calculate crc
+        if (crcFromServer != crcCalculated) {
+            // crc don't match send abort
+            COCSdoAbort(csdo, CO_SDO_ERR_TBIT); 
+            COCSdoTransferFinalize(csdo);
+            return CO_ERR_SDO_ABORT;
+        }
+    }
+    cmd = WRITE_BITFIELD(CMD_CCS_BIT_OFFSET, 
+                        CMD_CCS_MASK,
+                        CMD_CCS_BLOCK_UPLOAD);
+    cmd |= WRITE_BITFIELD(BLOCK_UPLOAD_CMD_CS_BIT_OFFSET,
+                        BLOCK_UPLOAD_CMD_CS_MASK,
+                        BLOCK_UPLOAD_CMD_CS_END_BLOCK_UPLOAD_REQUEST);
+
+    CO_SET_BYTE(&frm, cmd, FRM_CMD_BYTE_OFFSET);
+
+    /* refresh timer */
+    (void)COTmrDelete(&(csdo->Node->Tmr), csdo->Tfer.Tmr);
+    ticks = COTmrGetTicks(&(csdo->Node->Tmr), csdo->Tfer.Tmt, CO_TMR_UNIT_1MS);
+    csdo->Tfer.Tmr = COTmrCreate(&(csdo->Node->Tmr), ticks, 0, &COCSdoTimeout, csdo);
+
+    (void)COIfCanSend(&csdo->Node->If, &frm);
+
+    COCSdoTransferFinalize(csdo);
+
     return result;
 }
 
@@ -917,16 +965,16 @@ CO_ERR COCSdoResponse(CO_CSDO *csdo)
 
     if (csdo->Tfer.Type == CO_CSDO_TRANSFER_UPLOAD_BLOCK) {
         if (csdo->Block.State == BLOCK_STATE_TRANSFERRING) {
-            (void)COCSdoUploadSubBlock(csdo);
+            result = COCSdoUploadSubBlock(csdo);
 
         } else if (scs == CMD_SCS_BLOCK_UPLOAD) {
             uint8_t ss = READ_BITFIELD( BLOCK_UPLOAD_CMD_SS_BIT_OFFSET, 
                                         BLOCK_UPLOAD_CMD_SS_MASK, 
                                         cmd);
             if (ss == BLOCK_UPLOAD_CMD_SS_INITIATE_UPLOAD_RESPONSE) {
-                (void)COCSdoInitUploadBlock(csdo);
+                result = COCSdoInitUploadBlock(csdo);
             } else {
-                (void)COCSdoUploadEndBlock(csdo);
+                result = COCSdoUploadEndBlock(csdo);
         } else if ((scs == CMD_SCS_INIT_UPLOAD) && 
             (CMD_S_DATA_SET_SIZE_IS_INDICATED == READ_BITFIELD(NONBLOCK_CMD_S_BIT_OFFSET,
                                                                CMD_S_MASK,
@@ -934,7 +982,7 @@ CO_ERR COCSdoResponse(CO_CSDO *csdo)
             // server decided to switch to segmented upload
             // TODO: make sure structure is properly initialized for segmented
             csdo->Tfer.Type = CO_CSDO_TRANSFER_UPLOAD_SEGMENT;
-            (void)COCSdoInitUploadSegmented(csdo);
+            result = COCSdoInitUploadSegmented(csdo);
         } else {
             COCSdoAbort(csdo, CO_SDO_ERR_CMD);
             COCSdoTransferFinalize(csdo);
@@ -945,11 +993,11 @@ CO_ERR COCSdoResponse(CO_CSDO *csdo)
                                     cmd);
         if (scs == CMD_SCS_BLOCK_DOWNLOAD) {
             if (ss == BLOCK_DOWNLOAD_CMD_SS_INITIATE_DOWNLOAD_RESPONSE) {
-                (void)COCSdoInitDownloadBlock(csdo);
+                result = COCSdoInitDownloadBlock(csdo);
             } else if (ss == BLOCK_DOWNLOAD_CMD_SS_BLOCK_DOWNLOAD_RESPONSE) {
-                (void)COCSdoDownloadBlock(csdo);
+                result = COCSdoDownloadBlock(csdo);
             } else if (ss == BLOCK_DOWNLOAD_CMD_SS_END_BLOCK_DOWNLOAD_RESPONSE) {
-                (void)COCSdoDownloadBlockEnd(csdo);
+                result = COCSdoDownloadBlockEnd(csdo);
             } else {
                 COCSdoAbort(csdo, CO_SDO_ERR_CMD);
                 COCSdoTransferFinalize(csdo);
