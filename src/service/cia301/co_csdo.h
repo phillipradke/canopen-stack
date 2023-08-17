@@ -103,6 +103,12 @@ typedef struct CO_CSDO_SEG_T {
 } CO_CSDO_SEG;
 
 
+typedef enum {
+    BLOCK_STATE_INIT            = 0,
+    BLOCK_STATE_TRANSFERRING,
+    BLOCK_STATE_END,
+} CO_CSDO_BLOCK_STATE;
+
 
 /*! \brief SDO CLIENT TRANSFER
  *
@@ -126,6 +132,7 @@ typedef struct CO_CSDO_TRANSFER_T {
 } CO_CSDO_TRANSFER;
 
 typedef struct CO_CSDO_BLOCK_T {
+    CO_CSDO_BLOCK_STATE    State;
     uint8_t                *Buf;        /*!< Reference to transfered data    */
     uint32_t               Size;        /*!< Transfered data size            */
     uint32_t               Index;       /*!< Index of buffer being transfered*/
@@ -135,6 +142,18 @@ typedef struct CO_CSDO_BLOCK_T {
     uint8_t                Data_Bytes_Frm; 
     uint8_t                CRC;     
 } CO_CSDO_BLOCK;
+
+typedef struct CO_CSD_BLK_UPLOAD_T {
+    CO_CSDO_BLOCK_STATE     State;
+    uint8_t                 *buf;
+    uint32_t                size;
+    uint32_t                index;
+    uint8_t                 SegNum;
+    uint8_t                 CRC;
+    uint8_t                 BytesLastSeg;
+} CO_CSDO_BLK_UP;
+    
+
 
 /*! \brief SDO CLIENT
  *
@@ -150,6 +169,7 @@ typedef struct CO_CSDO_T {
     CO_CSDO_STATE     State;            /*!< Current CSDO state              */
     CO_CSDO_TRANSFER  Tfer;             /*!< Current CSDO transfer info      */
     CO_CSDO_BLOCK     Block;
+    CO_CSDO_BLK_UP    BlkUp;
 } CO_CSDO;
 
 /******************************************************************************
