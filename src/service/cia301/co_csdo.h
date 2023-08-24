@@ -226,7 +226,16 @@ CO_ERR COCSdoRequestUpload(CO_CSDO *csdo,
                            uint32_t size,
                            CO_CSDO_CALLBACK_T callback,
                            uint32_t timeout);
-
+CO_ERR COCSdoRequestUploadBlock(CO_CSDO *csdo,
+                           uint32_t key,
+                           uint8_t *buf,
+                           uint32_t size,
+                           CO_CSDO_CALLBACK_T callback,
+                           uint32_t timeout,
+                           bool crc,
+                           uint8_t blksize,
+                           uint8_t pst);
+ 
 /*! \brief
  *
  *   This function initiates SDO download sequence. User should provide its

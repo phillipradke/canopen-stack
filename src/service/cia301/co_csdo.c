@@ -38,7 +38,7 @@
 ******************************************************************************/
 // Bit definitions
 // Client Command Specifier 
-#define CMD_CCS_BIT_OFFSET                                  7
+#define CMD_CCS_BIT_OFFSET                                  5
 #define CMD_CCS_MASK                                        0b111
 #define CMD_CCS_BLOCK_DOWNLOAD                              6
 #define CMD_CCS_BLOCK_UPLOAD                                5
@@ -109,7 +109,7 @@
 
 // non data bytes in final frame
 #define CMD_N_BIT_OFFSET                                    2
-#define CMD_N_BIT_MASK                                      3
+#define CMD_N_MASK                                          3
 
 /***** byte offsets **********************************************************/
 #define FRM_CMD_BYTE_OFFSET                                 0
@@ -180,6 +180,17 @@ static CO_ERR COCSdoRequestDownloadFull(CO_CSDO *csdo,
                              uint32_t timeout,
                              bool block,
                              bool crc);
+
+CO_ERR COCSdoRequestUploadFull(CO_CSDO *csdo,
+                           uint32_t key,
+                           uint8_t *buf,
+                           uint32_t size,
+                           CO_CSDO_CALLBACK_T callback,
+                           uint32_t timeout,
+                           bool block,
+                           bool crc,
+                           uint8_t blksize,
+                           uint8_t pst);
 
 /******************************************************************************
 * PRIVATE FUNCTIONS
@@ -497,6 +508,11 @@ static CO_ERR COCSdoDownloadBlockSendSubBlock(CO_CSDO *csdo){
     uint8_t Seg_Num;
     for (Seg_Num = 1; Seg_Num < block->Block_Size; Seg_Num++) { 
 
+        CO_SET_ID  (&frm, csdo->TxId);
+        CO_SET_DLC (&frm, 8u);
+        CO_SET_LONG(&frm, 0, 0u);
+        CO_SET_LONG(&frm, 0, 4u);
+
         // write the sequence number to the cmd byte
         cmd = (uint8_t)WRITE_BITFIELD(CMD_SEQNUM_BIT_OFFSET, CMD_SEQNUM_MASK, Seg_Num);
         
@@ -553,6 +569,13 @@ static CO_ERR COCSdoDownloadBlock(CO_CSDO *csdo) {
     uint8_t ackseq = CO_GET_BYTE(csdo->Frm, BLOCK_FRM_ACKSEQ_BYTE_OFFSET);
     uint8_t blksize = CO_GET_BYTE(csdo->Frm, BLOCK_FRM_SUBBLOCK_BLKSIZE_BYTE_OFFSET);
 
+    CO_SET_ID  (&frm, csdo->TxId       );
+    CO_SET_DLC (&frm, 8                );
+
+     /* clean frm data */
+    CO_SET_LONG(&frm, 0, 0u);
+    CO_SET_LONG(&frm, 0, 4u);
+
     block->Index = block->Blk_Offset + (ackseq * BLOCK_FRM_SEG_DATA_BYTE_SIZE);
     if (block->Index >= block->Size) {
         // all data has been successfuly recieved by server, send end frame
@@ -565,7 +588,7 @@ static CO_ERR COCSdoDownloadBlock(CO_CSDO *csdo) {
         n = BLOCK_FRM_SEG_DATA_BYTE_SIZE - block->Data_Bytes_Frm;
         cmd |= (uint8_t)WRITE_BITFIELD(
                 CMD_N_BIT_OFFSET, 
-                CMD_N_BIT_MASK, 
+                CMD_N_MASK, 
                 n);
 
         // write the cs bits
@@ -612,7 +635,7 @@ static CO_ERR COCSdoInitUploadBlock(CO_CSDO *csdo){
     uint8_t   cmd;
     CO_IF_FRM frm;
 
-    uin32_t size = CO_GET_LONG(csdo->Frm, BLOCK_FRM_SIZE_BYTE_OFFSET);
+    uint32_t size = CO_GET_LONG(csdo->Frm, BLOCK_FRM_SIZE_BYTE_OFFSET);
 
     Idx = CO_GET_WORD(csdo->Frm, 1u);
     Sub = CO_GET_BYTE(csdo->Frm, 3u);
@@ -621,11 +644,11 @@ static CO_ERR COCSdoInitUploadBlock(CO_CSDO *csdo){
     // size of the buffer matches the size of the file being uploaded.
     if ((Idx == csdo->Tfer.Idx) &&
         (Sub == csdo->Tfer.Sub) && 
-        (size == csdo->BLOCK.Size)) {
+        (size == csdo->BlkUp.size)) {
         // TODO: Make check to check if buffer is greater than size rather than equal to?
 
         cmd = CO_GET_BYTE(csdo->Frm, FRM_CMD_BYTE_OFFSET);
-        csdo->BLOCK.CRC = READ_BITFIELD(CMD_CC_BIT_OFFSET, CMD_CC_MASK, cmd);
+        csdo->BlkUp.CRC = READ_BITFIELD(CMD_CC_BIT_OFFSET, CMD_CC_MASK, cmd);
 
         CO_SET_ID  (&frm, csdo->TxId);
         CO_SET_DLC (&frm, 8u);
@@ -638,7 +661,7 @@ static CO_ERR COCSdoInitUploadBlock(CO_CSDO *csdo){
                 CMD_CCS_BLOCK_UPLOAD);
         cmd |= WRITE_BITFIELD(BLOCK_UPLOAD_CMD_CS_BIT_OFFSET,
                 BLOCK_UPLOAD_CMD_CS_MASK,
-                BlOCK_UPLOAD_CMD_CS_START_UPLOAD);
+                BLOCK_UPLOAD_CMD_CS_START_UPLOAD);
 
         CO_SET_BYTE(&frm, cmd, FRM_CMD_BYTE_OFFSET);
         csdo->Block.State = BLOCK_STATE_TRANSFERRING;
@@ -651,7 +674,7 @@ static CO_ERR COCSdoInitUploadBlock(CO_CSDO *csdo){
         (void)COIfCanSend(&csdo->Node->If, &frm);
                                       
     } else {
-        COCSdoAbort(csdo, CO_SDO_ERR_TBIT); 
+        COCSdoAbort(csdo, CO_SDO_ERR_LEN); 
         COCSdoTransferFinalize(csdo);
     }
     return result;
@@ -660,9 +683,17 @@ static CO_ERR COCSdoInitUploadBlock(CO_CSDO *csdo){
 // TODO: add function call in timeout function?
 static CO_ERR COCSdoUploadSubBlockResponse(CO_CSDO *csdo) {
     CO_ERR    result = CO_ERR_SDO_SILENT;
+    uint32_t  ticks;
     CO_IF_FRM frm;
     uint8_t   cmd = 0;
     uint8_t   blkSize = 0;
+
+    CO_SET_ID  (&frm, csdo->TxId       );
+    CO_SET_DLC (&frm, 8                );
+
+     /* clean frm data */
+    CO_SET_LONG(&frm, 0, 0u);
+    CO_SET_LONG(&frm, 0, 4u);
 
     uint32_t bytesLeftBuf = csdo->BlkUp.size - csdo->BlkUp.index;
     if (bytesLeftBuf > MAX_BLK_BYTES) {
@@ -672,13 +703,13 @@ static CO_ERR COCSdoUploadSubBlockResponse(CO_CSDO *csdo) {
         if ((bytesLeftBuf % BLOCK_FRM_SEG_DATA_BYTE_SIZE) != 0) {
             blkSize++;
         }
-
+    }
     cmd = WRITE_BITFIELD(CMD_CCS_BIT_OFFSET,
                         CMD_CCS_MASK,
                         CMD_CCS_BLOCK_UPLOAD);
     cmd |= WRITE_BITFIELD(BLOCK_UPLOAD_CMD_CS_BIT_OFFSET,
                         BLOCK_UPLOAD_CMD_CS_MASK,
-                        BLOCK_UPLOAD_CMD_CS_BLCOK_UPLOAD_RESPONSE);
+                        BLOCK_UPLOAD_CMD_CS_BLOCK_UPLOAD_RESPONSE);
 
     CO_SET_BYTE(&frm, cmd, FRM_CMD_BYTE_OFFSET);
     CO_SET_BYTE(&frm, csdo->BlkUp.SegNum, BLOCK_FRM_SEG_DATA_BYTE_OFFSET);
@@ -690,6 +721,7 @@ static CO_ERR COCSdoUploadSubBlockResponse(CO_CSDO *csdo) {
     csdo->Tfer.Tmr = COTmrCreate(&(csdo->Node->Tmr), ticks, 0, &COCSdoTimeout, csdo);
 
     (void)COIfCanSend(&csdo->Node->If, &frm);
+    return result;
 }
 
 static CO_ERR COCSdoUploadSubBlock(CO_CSDO *csdo) 
@@ -701,7 +733,7 @@ static CO_ERR COCSdoUploadSubBlock(CO_CSDO *csdo)
     uint8_t seqnum = READ_BITFIELD(CMD_SEQNUM_BIT_OFFSET, 
                                     CMD_SEQNUM_MASK, 
                                     cmd);
-    uint8_t numByteRead = BLOCK_FRM_SEG_DATA_BYTE_SIZE;
+    uint8_t numBytesRead = BLOCK_FRM_SEG_DATA_BYTE_SIZE;
 
     if (seqnum == (csdo->BlkUp.SegNum + 1)) {
         if (c == CMD_C_NO_MORE_SEGMENTS_TO_BE_DOWNLOADED) {
@@ -729,14 +761,22 @@ static CO_ERR COCSdoUploadSubBlock(CO_CSDO *csdo)
 
 static CO_ERR COCSdoUploadEndBlock(CO_CSDO *csdo) {
     CO_ERR    result = CO_ERR_SDO_SILENT;
+    uint32_t  ticks;
     CO_IF_FRM frm;
 
     uint8_t cmd = CO_GET_BYTE(csdo->Frm, FRM_CMD_BYTE_OFFSET);
     uint8_t n = READ_BITFIELD(CMD_N_BIT_OFFSET, CMD_N_MASK, cmd);
+    
+    CO_SET_ID  (&frm, csdo->TxId       );
+    CO_SET_DLC (&frm, 8                );
+
+     /* clean frm data */
+    CO_SET_LONG(&frm, 0, 0u);
+    CO_SET_LONG(&frm, 0, 4u);
 
     if ( (BLOCK_FRM_SEG_DATA_BYTE_SIZE - n) != csdo->BlkUp.BytesLastSeg) {
         // number of bytes sent in final segment doesn't match number read, send abort
-        COCSdoAbort(csdo, CO_SDO_ERR_TBIT); 
+        COCSdoAbort(csdo, CO_SDO_ERR_MEM); 
         COCSdoTransferFinalize(csdo);
         return CO_ERR_SDO_ABORT;
     } 
@@ -745,7 +785,7 @@ static CO_ERR COCSdoUploadEndBlock(CO_CSDO *csdo) {
         uint16_t crcCalculated = 0; // TODO: calculate crc
         if (crcFromServer != crcCalculated) {
             // crc don't match send abort
-            COCSdoAbort(csdo, CO_SDO_ERR_TBIT); 
+            COCSdoAbort(csdo, CO_SDO_ERR_CRC); 
             COCSdoTransferFinalize(csdo);
             return CO_ERR_SDO_ABORT;
         }
@@ -975,7 +1015,8 @@ CO_ERR COCSdoResponse(CO_CSDO *csdo)
                 result = COCSdoInitUploadBlock(csdo);
             } else {
                 result = COCSdoUploadEndBlock(csdo);
-        } else if ((scs == CMD_SCS_INIT_UPLOAD) && 
+            }
+        } else if ((scs == CMD_SCS_INIT_UPLOAD) &&
             (CMD_S_DATA_SET_SIZE_IS_INDICATED == READ_BITFIELD(NONBLOCK_CMD_S_BIT_OFFSET,
                                                                CMD_S_MASK,
                                                                cmd))) {
@@ -1068,7 +1109,7 @@ CO_ERR COCSdoRequestUpload(CO_CSDO *csdo,
                            uint32_t size,
                            CO_CSDO_CALLBACK_T callback,
                            uint32_t timeout){
-    COCSdoRequestUploadFull(csdo, key, buf, size, callback, timeout, false, false, 0, 0);
+    return COCSdoRequestUploadFull(csdo, key, buf, size, callback, timeout, false, false, 0, 0);
 }
 
 CO_ERR COCSdoRequestUploadBlock(CO_CSDO *csdo,
@@ -1080,7 +1121,7 @@ CO_ERR COCSdoRequestUploadBlock(CO_CSDO *csdo,
                            bool crc,
                            uint8_t blksize,
                            uint8_t pst){
-    COCSdoRequestUploadFull(csdo, key, buf, size, callback, timeout, true, crc, blksize, pst);
+    return COCSdoRequestUploadFull(csdo, key, buf, size, callback, timeout, true, crc, blksize, pst);
 }
 
 CO_ERR COCSdoRequestUploadFull(CO_CSDO *csdo,
@@ -1092,7 +1133,7 @@ CO_ERR COCSdoRequestUploadFull(CO_CSDO *csdo,
                            bool block,
                            bool crc,
                            uint8_t blksize,
-                           uint8_t pst){
+                           uint8_t pst)
 {
     CO_IF_FRM frm;
     uint32_t  ticks;
@@ -1125,26 +1166,26 @@ CO_ERR COCSdoRequestUploadFull(CO_CSDO *csdo,
         // create and send first block upload frame
         cmd = WRITE_BITFIELD(
                         CMD_CCS_BIT_OFFSET,
-                        CMD_CCS_BIT_MASK,
+                        CMD_CCS_MASK,
                         CMD_CCS_BLOCK_UPLOAD);
         if (crc == true) {
             cmd |= WRITE_BITFIELD(
-                         CMD_CC_BIT_OFFSET                                                           
-                         CMD_CC_MASK                                   
-                         CMD_CC_CLIENT_SUPPORTs_CRC_GENERATION);
+                         CMD_CC_BIT_OFFSET,                                                           
+                         CMD_CC_MASK,                                   
+                         CMD_CC_CLIENT_SUPPORTS_CRC_GENERATION);
         } else {
             cmd |= WRITE_BITFIELD(
-                         CMD_CC_BIT_OFFSET                                                           
-                         CMD_CC_MASK                                   
+                         CMD_CC_BIT_OFFSET,                                                           
+                         CMD_CC_MASK,                                   
                          CMD_CC_CLIENT_DOES_NOT_SUPPORT_CRC_GENERATION);
         }
-        cmd |= WRITE_BITFIELD{
-                         BLOCK_UPLOAD_CMD_CS_BIT_OFFSET              
-                         BLOCK_UPLOAD_CMD_CS_MASK                    
-                         BLOCK_UPLOAD_CMD_CS_INITIATE_UPLOAD_REQUEST 
-        }
+        cmd |= WRITE_BITFIELD(
+                         BLOCK_UPLOAD_CMD_CS_BIT_OFFSET,             
+                         BLOCK_UPLOAD_CMD_CS_MASK,                    
+                         BLOCK_UPLOAD_CMD_CS_INITIATE_UPLOAD_REQUEST);
+        
         csdo->Tfer.Type = CO_CSDO_TRANSFER_UPLOAD_BLOCK;
-        csdo->Block.state = BLOCK_STATE_INIT;
+        csdo->Block.State = BLOCK_STATE_INIT;
         
         /* Transmit transfer initiation directly */
         CO_SET_ID  (&frm, csdo->TxId        );
@@ -1153,7 +1194,7 @@ CO_ERR COCSdoRequestUploadFull(CO_CSDO *csdo,
         CO_SET_WORD(&frm, csdo->Tfer.Idx,   1u);
         CO_SET_BYTE(&frm, csdo->Tfer.Sub,   3u);
         CO_SET_BYTE(&frm, blksize,          BLOCK_INIT_FRM_BLKSIZE_BYTE_OFFSET);
-        CO_SET_BYTE(&frm, pst,              BLOCK_INIT_FRM_PST_BYTE_OFFSET);
+        CO_SET_BYTE(&frm, pst,              BLOCK_FRM_PST_BYTE_OFFSET);
         CO_SET_WORD(&frm, 0,                6u);
 
     } else {
