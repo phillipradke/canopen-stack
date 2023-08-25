@@ -21,6 +21,7 @@
 extern "C" {
 #endif
 
+       
 /******************************************************************************
 * INCLUDES
 ******************************************************************************/
@@ -59,6 +60,8 @@ typedef enum {
     CO_CSDO_TRANSFER_DOWNLOAD = 2,   /*!< SDO download is being executed     */
     CO_CSDO_TRANSFER_UPLOAD_SEGMENT = 3,  /*!< SDO segment upload is being executed     */
     CO_CSDO_TRANSFER_DOWNLOAD_SEGMENT = 4, /*!< SDO segment download is being executed     */
+    CO_CSDO_TRANSFER_UPLOAD_BLOCK   = 5,    /*!< SDO block uploade is being executed    */
+    CO_CSDO_TRANSFER_DOWNLOAD_BLOCK = 6,    /*!< SDO block download is being executed   */
 
 } CO_CSDO_TRANSFER_TYPE;
 
@@ -100,6 +103,12 @@ typedef struct CO_CSDO_SEG_T {
 } CO_CSDO_SEG;
 
 
+typedef enum {
+    BLOCK_STATE_INIT            = 0,
+    BLOCK_STATE_TRANSFERRING,
+    BLOCK_STATE_END,
+} CO_CSDO_BLOCK_STATE;
+
 
 /*! \brief SDO CLIENT TRANSFER
  *
@@ -122,6 +131,30 @@ typedef struct CO_CSDO_TRANSFER_T {
     uint8_t                TBit;        /*!< Segment toggle bit              */
 } CO_CSDO_TRANSFER;
 
+typedef struct CO_CSDO_BLOCK_T {
+    CO_CSDO_BLOCK_STATE    State;
+    uint8_t                *Buf;        /*!< Reference to transfered data    */
+    uint32_t               Size;        /*!< Transfered data size            */
+    uint32_t               Index;       /*!< Index of buffer being transfered*/
+    uint32_t               Blk_Offset;  /*!< Starting index of sub-block     */
+    uint8_t                Block_Size;  /*!< Max number of segments in block */
+    uint8_t                C_Bit;       
+    uint8_t                Data_Bytes_Frm; 
+    uint8_t                CRC;     
+} CO_CSDO_BLOCK;
+
+typedef struct CO_CSD_BLK_UPLOAD_T {
+    CO_CSDO_BLOCK_STATE     State;
+    uint8_t                 *buf;
+    uint32_t                size;
+    uint32_t                index;
+    uint8_t                 SegNum;
+    uint8_t                 CRC;
+    uint8_t                 BytesLastSeg;
+} CO_CSDO_BLK_UP;
+    
+
+
 /*! \brief SDO CLIENT
  *
  *   This structure contains information required for SDO client
@@ -135,6 +168,8 @@ typedef struct CO_CSDO_T {
     uint8_t           NodeId;           /*!< Node-Id of addressed SDO server */
     CO_CSDO_STATE     State;            /*!< Current CSDO state              */
     CO_CSDO_TRANSFER  Tfer;             /*!< Current CSDO transfer info      */
+    CO_CSDO_BLOCK     Block;
+    CO_CSDO_BLK_UP    BlkUp;
 } CO_CSDO;
 
 /******************************************************************************
@@ -191,7 +226,16 @@ CO_ERR COCSdoRequestUpload(CO_CSDO *csdo,
                            uint32_t size,
                            CO_CSDO_CALLBACK_T callback,
                            uint32_t timeout);
-
+CO_ERR COCSdoRequestUploadBlock(CO_CSDO *csdo,
+                           uint32_t key,
+                           uint8_t *buf,
+                           uint32_t size,
+                           CO_CSDO_CALLBACK_T callback,
+                           uint32_t timeout,
+                           bool crc,
+                           uint8_t blksize,
+                           uint8_t pst);
+ 
 /*! \brief
  *
  *   This function initiates SDO download sequence. User should provide its
@@ -225,6 +269,13 @@ CO_ERR COCSdoRequestDownload(CO_CSDO *csdo,
                              uint32_t size,
                              CO_CSDO_CALLBACK_T callback,
                              uint32_t timeout);
+CO_ERR COCSdoRequestDownloadBlock(CO_CSDO *csdo,
+                             uint32_t key,
+                             uint8_t *buffer,
+                             uint32_t size,
+                             CO_CSDO_CALLBACK_T callback,
+                             uint32_t timeout,
+                             bool crc);
 
 /******************************************************************************
 * PROTECTED API FUNCTIONS

@@ -21,6 +21,129 @@
 #include "co_core.h"
 
 #if USE_CSDO
+/******************************************************************************
+* MACROS 
+******************************************************************************/
+#define WRITE_BITFIELD(offset, mask, value)         (((value)&(mask))<<(offset))
+#define CLEAR_BITFIELD(offset,mask)                 WRITE_BITFIELD(offset,mask,0)
+#define CLEAR_WRITE_BITFIELD(offset,mask,value,bitfield)    \
+    do{                                                     \
+        bitfield &= CLEAR_BITFIELD(offset,mask);            \
+        bitfield |= WRITE_BITFIELD(offset,mask,value);      \
+    } while(0)
+#define READ_BITFIELD(offset, mask, byte)           (((byte)>>(offset))&(mask)) 
+ 
+/******************************************************************************
+* PRIVATE CONSTANTS 
+******************************************************************************/
+// Bit definitions
+// Client Command Specifier 
+#define CMD_CCS_BIT_OFFSET                                  5
+#define CMD_CCS_MASK                                        0b111
+#define CMD_CCS_BLOCK_DOWNLOAD                              6
+#define CMD_CCS_BLOCK_UPLOAD                                5
+#define CMD_CCS_SEGMENT_UPLOAD                              3
+#define CMD_CCS_INIT_UPLOAD                                 2
+#define CMD_CCS_INIT_DOWNLOAD                               1
+#define CMD_CCS_SEGMENT_DOWNLOAD                            0
+
+// Server Command Specifier
+#define CMD_SCS_BIT_OFFSET                                  5
+#define CMD_SCS_MASK                                        0b111
+#define CMD_SCS_BLOCK_UPLOAD                                6
+#define CMD_SCS_BLOCK_DOWNLOAD                              5
+#define CMD_SCS_INIT_DOWNLOAD                               3
+#define CMD_SCS_INIT_UPLOAD                                 2
+#define CMD_SCS_SEGMENT_DOWNLOAD                            1
+#define CMD_SCS_SEGMENT_UPLOAD                              0
+
+// Client Subcommand download
+#define BLOCK_DOWNLOAD_CMD_CS_BIT_OFFSET                    0
+#define BLOCK_DOWNLOAD_CMD_CS_MASK                          0b1
+#define BLOCK_DOWNLOAD_CMD_CS_INITIATE_DOWNLOAD_REQUEST     0
+#define BLOCK_DOWNLOAD_CMD_CS_END_BLOCK_DOWNLOAD_REQUEST    1
+
+// Server Subcommand download
+#define BLOCK_DOWNLOAD_CMD_SS_BIT_OFFSET                    0
+#define BLOCK_DOWNLOAD_CMD_SS_MASK                          0b11
+#define BLOCK_DOWNLOAD_CMD_SS_INITIATE_DOWNLOAD_RESPONSE    0
+#define BLOCK_DOWNLOAD_CMD_SS_END_BLOCK_DOWNLOAD_RESPONSE   1
+#define BLOCK_DOWNLOAD_CMD_SS_BLOCK_DOWNLOAD_RESPONSE       2
+
+// Client Subcommand Upload
+#define BLOCK_UPLOAD_CMD_CS_BIT_OFFSET                      0
+#define BLOCK_UPLOAD_CMD_CS_MASK                            0b11
+#define BLOCK_UPLOAD_CMD_CS_INITIATE_UPLOAD_REQUEST         0
+#define BLOCK_UPLOAD_CMD_CS_END_BLOCK_UPLOAD_REQUEST        1
+#define BLOCK_UPLOAD_CMD_CS_BLOCK_UPLOAD_RESPONSE           2
+#define BLOCK_UPLOAD_CMD_CS_START_UPLOAD                    3
+
+// Server Subcommand Upload
+#define BLOCK_UPLOAD_CMD_SS_BIT_OFFSET                      0
+#define BLOCK_UPLOAD_CMD_SS_MASK                            0b1
+#define BLOCK_UPLOAD_CMD_SS_INITIATE_UPLOAD_RESPONSE        0
+#define BLOCK_UPLOAD_CMD_SS_END_BLOCK_UPLOAD_RESPONSE       1
+
+// Size Indicator
+#define CMD_S_BIT_OFFSET                                    1
+#define NONBLOCK_CMD_S_BIT_OFFSET                           0
+#define CMD_S_MASK                                          0b1
+#define CMD_S_DATA_SET_SIZE_NOT_INDICATED                   0
+#define CMD_S_DATA_SET_SIZE_IS_INDICATED                    1
+
+// Client CRC support
+#define CMD_CC_BIT_OFFSET                                   2
+#define CMD_CC_MASK                                         0b1
+#define CMD_CC_CLIENT_DOES_NOT_SUPPORT_CRC_GENERATION       0
+#define CMD_CC_CLIENT_SUPPORTS_CRC_GENERATION               1
+
+// Continuation Bit
+#define CMD_C_BIT_OFFSET                                    7
+#define CMD_C_MASK                                          0b1
+#define CMD_C_MORE_SEGMENTS_TO_BE_DOWNLOADED                0
+#define CMD_C_NO_MORE_SEGMENTS_TO_BE_DOWNLOADED             1
+
+// Sequence Number
+#define CMD_SEQNUM_BIT_OFFSET                               0
+#define CMD_SEQNUM_MASK                                     0b1111111
+
+// non data bytes in final frame
+#define CMD_N_BIT_OFFSET                                    2
+#define CMD_N_MASK                                          3
+
+/***** byte offsets **********************************************************/
+#define FRM_CMD_BYTE_OFFSET                                 0
+#define FRM_CMD_BYTE_SIZE                                   1
+
+#define FRM_M_BYTE_OFFSET                                   1
+#define FRM_M_BYTE_SIZE                                     3
+
+#define BLOCK_FRM_SIZE_BYTE_OFFSET                          4
+#define BLOCK_FRM_SIZE_BYTE_SIZE                            4
+
+#define BLOCK_INIT_FRM_BLKSIZE_BYTE_OFFSET                  4
+#define BLOCK_INIT_FRM_BLKSIZE_BYTE_SIZE                    1
+
+#define BLOCK_FRM_SEG_DATA_BYTE_OFFSET                      1
+#define BLOCK_FRM_SEG_DATA_BYTE_SIZE                        7
+
+#define BLOCK_FRM_ACKSEQ_BYTE_OFFSET                        1
+#define BLOCK_FRM_ACKSEQ_BYTE_SIZE                          1
+
+#define BLOCK_FRM_SUBBLOCK_BLKSIZE_BYTE_OFFSET              2
+#define BLOCK_FRM_SUBBLOCK_BLKSIZE_BYTE_SIZE                1
+
+#define BLOCK_FRM_CRC_BYTE_OFFSET                           1
+#define BLOCK_FRM_CRC_BYTE_SIZE                             2
+
+#define BLOCK_FRM_PST_BYTE_OFFSET                           5
+#define BLOCK_FRM_PST_BYTE_SIZE                             2
+
+/***** Other constants *******************************************************/
+#define DONT_GENERATE_CRC         CMD_CC_CLIENT_DOES_NOT_SUPPORT_CRC_GENERATION
+#define GENERATE_CRC              CMD_CC_CLIENT_SUPPORTS_CRC_GENERATION        
+#define MAX_BLKSIZE               127
+#define MAX_BLK_BYTES             (MAX_BLKSIZE * BLOCK_FRM_SEG_DATA_BYTE_SIZE)
 
 /******************************************************************************
 * PRIVATE FUNCTIONS
@@ -35,9 +158,39 @@ static CO_ERR COCSdoUploadSegmented        (CO_CSDO *csdo);
 static CO_ERR COCSdoInitDownloadSegmented  (CO_CSDO *csdo);
 static CO_ERR COCSdoDownloadSegmented      (CO_CSDO *csdo);
 static CO_ERR COCSdoFinishDownloadSegmented(CO_CSDO *csdo);
+
+static CO_ERR COCSdoInitDownloadBlock      (CO_CSDO *csdo);
+static CO_ERR COCSdoDownloadBlockEnd       (CO_CSDO *csdo);
+static CO_ERR COCSdoDownloadBlockSendSubBlock(CO_CSDO *csdo);
+static CO_ERR COCSdoDownloadBlock          (CO_CSDO *csdo);
+
+static CO_ERR COCSdoInitUploadBlock        (CO_CSDO *csdo);
+static CO_ERR COCSdoUploadSubBlockResponse (CO_CSDO *csdo);
+static CO_ERR COCSdoUploadSubBlock         (CO_CSDO *csdo);
+static CO_ERR COCSdoUploadEndBlock         (CO_CSDO *csdo);
+
 static void   COCSdoAbort                  (CO_CSDO *csdo, uint32_t err);
 static void   COCSdoTransferFinalize       (CO_CSDO *csdo);
 static void   COCSdoTimeout                (void *parg);
+static CO_ERR COCSdoRequestDownloadFull(CO_CSDO *csdo,
+                             uint32_t key,
+                             uint8_t *buffer,
+                             uint32_t size,
+                             CO_CSDO_CALLBACK_T callback,
+                             uint32_t timeout,
+                             bool block,
+                             bool crc);
+
+CO_ERR COCSdoRequestUploadFull(CO_CSDO *csdo,
+                           uint32_t key,
+                           uint8_t *buf,
+                           uint32_t size,
+                           CO_CSDO_CALLBACK_T callback,
+                           uint32_t timeout,
+                           bool block,
+                           bool crc,
+                           uint8_t blksize,
+                           uint8_t pst);
 
 /******************************************************************************
 * PRIVATE FUNCTIONS
@@ -312,6 +465,352 @@ static CO_ERR COCSdoUploadSegmented(CO_CSDO *csdo)
     return result;
 }
 
+static CO_ERR COCSdoInitDownloadBlock (CO_CSDO *csdo)
+{
+    CO_ERR    result = CO_ERR_SDO_SILENT;
+    uint32_t  ticks;
+    uint16_t  Idx;
+    uint8_t   Sub;
+    CO_IF_FRM frm;
+
+    Idx = CO_GET_WORD(csdo->Frm, 1u);
+    Sub = CO_GET_BYTE(csdo->Frm, 3u);
+    if ((Idx == csdo->Tfer.Idx) &&
+        (Sub == csdo->Tfer.Sub)) {
+        
+        // read the block size value returned from server before clearing the frame
+        csdo->Block.Block_Size = CO_GET_BYTE(csdo->Frm, BLOCK_INIT_FRM_BLKSIZE_BYTE_OFFSET);
+
+        CO_SET_ID  (&frm, csdo->TxId);
+        CO_SET_DLC (&frm, 8u);
+        CO_SET_LONG(&frm, 0, 0u);
+        CO_SET_LONG(&frm, 0, 4u);
+
+        // TODO: handle error or pass it back to caller?
+        result = COCSdoDownloadBlockSendSubBlock(csdo);
+
+    } else {
+        COCSdoAbort(csdo, CO_SDO_ERR_TBIT); 
+        COCSdoTransferFinalize(csdo);
+    }
+
+    return result;
+}
+
+static CO_ERR COCSdoDownloadBlockSendSubBlock(CO_CSDO *csdo){
+    CO_ERR    result = CO_ERR_SDO_SILENT;
+    uint32_t  ticks;
+    uint8_t   Num_Segs;
+    CO_IF_FRM frm;
+    uint8_t   cmd = 0;
+    CO_CSDO_BLOCK* block = &csdo->Block;
+
+    uint8_t Seg_Num;
+    for (Seg_Num = 1; Seg_Num < block->Block_Size; Seg_Num++) { 
+
+        CO_SET_ID  (&frm, csdo->TxId);
+        CO_SET_DLC (&frm, 8u);
+        CO_SET_LONG(&frm, 0, 0u);
+        CO_SET_LONG(&frm, 0, 4u);
+
+        // write the sequence number to the cmd byte
+        cmd = (uint8_t)WRITE_BITFIELD(CMD_SEQNUM_BIT_OFFSET, CMD_SEQNUM_MASK, Seg_Num);
+        
+        // determine size of data to send in segment and if last
+        uint32_t size = block->Size - block->Index;
+        if (size > BLOCK_FRM_SEG_DATA_BYTE_SIZE) {
+            block->C_Bit = CMD_C_MORE_SEGMENTS_TO_BE_DOWNLOADED;
+            size = BLOCK_FRM_SEG_DATA_BYTE_SIZE;
+        } else {
+            block->C_Bit = CMD_C_NO_MORE_SEGMENTS_TO_BE_DOWNLOADED;  
+        }
+        
+        // save the number of data bytes send for use in end stage
+        block->Data_Bytes_Frm = size;
+
+        // write C bit to cmd byte
+        cmd |= (uint8_t)WRITE_BITFIELD( CMD_C_BIT_OFFSET, CMD_C_MASK, block->C_Bit);
+
+        // write cmd byte to frame
+        CO_SET_BYTE(&frm, cmd, FRM_CMD_BYTE_OFFSET);
+
+        // write data to frame
+        for (int i = 0; i < size; i++) {
+            CO_SET_BYTE(&frm, block->Buf[block->Index++],BLOCK_INIT_FRM_BLKSIZE_BYTE_OFFSET + i );
+        }
+
+        // send the frame
+        /* refresh timer */
+        (void)COTmrDelete(&(csdo->Node->Tmr), csdo->Tfer.Tmr);
+        ticks = COTmrGetTicks(&(csdo->Node->Tmr), csdo->Tfer.Tmt, CO_TMR_UNIT_1MS);
+        csdo->Tfer.Tmr = COTmrCreate(&(csdo->Node->Tmr), ticks, 0, &COCSdoTimeout, csdo);
+
+        (void)COIfCanSend(&csdo->Node->If, &frm);
+
+        // break if last segment
+        if (block->C_Bit == CMD_C_NO_MORE_SEGMENTS_TO_BE_DOWNLOADED) { 
+            break;
+        }
+    }
+    return result;
+}
+
+static CO_ERR COCSdoDownloadBlock(CO_CSDO *csdo) {
+    // SCS and SC bits have already been checked before calling this function
+
+    CO_ERR    result = CO_ERR_SDO_SILENT;
+    uint32_t  ticks;
+    uint8_t   cmd = 0;
+    uint8_t   n;
+    CO_IF_FRM frm;
+    CO_CSDO_BLOCK   *block = &csdo->Block;
+
+    // read the ackseq and blksize bytes from the frame
+    uint8_t ackseq = CO_GET_BYTE(csdo->Frm, BLOCK_FRM_ACKSEQ_BYTE_OFFSET);
+    uint8_t blksize = CO_GET_BYTE(csdo->Frm, BLOCK_FRM_SUBBLOCK_BLKSIZE_BYTE_OFFSET);
+
+    CO_SET_ID  (&frm, csdo->TxId       );
+    CO_SET_DLC (&frm, 8                );
+
+     /* clean frm data */
+    CO_SET_LONG(&frm, 0, 0u);
+    CO_SET_LONG(&frm, 0, 4u);
+
+    block->Index = block->Blk_Offset + (ackseq * BLOCK_FRM_SEG_DATA_BYTE_SIZE);
+    if (block->Index >= block->Size) {
+        // all data has been successfuly recieved by server, send end frame
+        cmd = (uint8_t)WRITE_BITFIELD(
+                CMD_CCS_BIT_OFFSET, 
+                CMD_CCS_MASK, 
+                CMD_CCS_BLOCK_DOWNLOAD);
+
+        // calculate and write the number of bytes that do not contain data in last segment
+        n = BLOCK_FRM_SEG_DATA_BYTE_SIZE - block->Data_Bytes_Frm;
+        cmd |= (uint8_t)WRITE_BITFIELD(
+                CMD_N_BIT_OFFSET, 
+                CMD_N_MASK, 
+                n);
+
+        // write the cs bits
+        cmd |= (uint8_t)WRITE_BITFIELD(
+                BLOCK_DOWNLOAD_CMD_CS_BIT_OFFSET,
+                BLOCK_DOWNLOAD_CMD_CS_MASK,
+                BLOCK_DOWNLOAD_CMD_CS_END_BLOCK_DOWNLOAD_REQUEST);
+
+        if (block->CRC == GENERATE_CRC) { 
+            // TODO: write CRC 
+        }
+        
+        // send the frame
+        /* refresh timer */
+        (void)COTmrDelete(&(csdo->Node->Tmr), csdo->Tfer.Tmr);
+        ticks = COTmrGetTicks(&(csdo->Node->Tmr), csdo->Tfer.Tmt, CO_TMR_UNIT_1MS);
+        csdo->Tfer.Tmr = COTmrCreate(&(csdo->Node->Tmr), ticks, 0, &COCSdoTimeout, csdo);
+
+        (void)COIfCanSend(&csdo->Node->If, &frm);
+
+    } else {
+        // update the block size just in case it changed
+        block->Block_Size = blksize;
+        // send the next block
+        result = COCSdoDownloadBlockSendSubBlock(csdo);
+    }
+    return result;
+}
+
+static CO_ERR COCSdoDownloadBlockEnd(CO_CSDO *csdo) {
+    // calling function already checked for scs and ss
+    // if we got here, we got a successful download to the server so just need
+    // to finalize and close the SDO session. 
+
+    COCSdoTransferFinalize(csdo);
+    return CO_ERR_SDO_SILENT;
+}
+
+static CO_ERR COCSdoInitUploadBlock(CO_CSDO *csdo){
+    CO_ERR    result = CO_ERR_SDO_SILENT;
+    uint32_t  ticks;
+    uint16_t  Idx;
+    uint8_t   Sub;
+    uint8_t   cmd;
+    CO_IF_FRM frm;
+
+    uint32_t size = CO_GET_LONG(csdo->Frm, BLOCK_FRM_SIZE_BYTE_OFFSET);
+
+    Idx = CO_GET_WORD(csdo->Frm, 1u);
+    Sub = CO_GET_BYTE(csdo->Frm, 3u);
+    
+    // make sure we have the correct index and sub index and make sure that the 
+    // size of the buffer matches the size of the file being uploaded.
+    if ((Idx == csdo->Tfer.Idx) &&
+        (Sub == csdo->Tfer.Sub) && 
+        (size == csdo->BlkUp.size)) {
+        // TODO: Make check to check if buffer is greater than size rather than equal to?
+
+        cmd = CO_GET_BYTE(csdo->Frm, FRM_CMD_BYTE_OFFSET);
+        csdo->BlkUp.CRC = READ_BITFIELD(CMD_CC_BIT_OFFSET, CMD_CC_MASK, cmd);
+
+        CO_SET_ID  (&frm, csdo->TxId);
+        CO_SET_DLC (&frm, 8u);
+        CO_SET_LONG(&frm, 0, 0u);
+        CO_SET_LONG(&frm, 0, 4u);
+
+        // create the start upload frame
+        cmd = WRITE_BITFIELD(CMD_CCS_BIT_OFFSET, 
+                CMD_CCS_MASK, 
+                CMD_CCS_BLOCK_UPLOAD);
+        cmd |= WRITE_BITFIELD(BLOCK_UPLOAD_CMD_CS_BIT_OFFSET,
+                BLOCK_UPLOAD_CMD_CS_MASK,
+                BLOCK_UPLOAD_CMD_CS_START_UPLOAD);
+
+        CO_SET_BYTE(&frm, cmd, FRM_CMD_BYTE_OFFSET);
+        csdo->Block.State = BLOCK_STATE_TRANSFERRING;
+
+        /* refresh timer */
+        (void)COTmrDelete(&(csdo->Node->Tmr), csdo->Tfer.Tmr);
+        ticks = COTmrGetTicks(&(csdo->Node->Tmr), csdo->Tfer.Tmt, CO_TMR_UNIT_1MS);
+        csdo->Tfer.Tmr = COTmrCreate(&(csdo->Node->Tmr), ticks, 0, &COCSdoTimeout, csdo);
+
+        (void)COIfCanSend(&csdo->Node->If, &frm);
+                                      
+    } else {
+        COCSdoAbort(csdo, CO_SDO_ERR_LEN); 
+        COCSdoTransferFinalize(csdo);
+    }
+    return result;
+ }
+
+// TODO: add function call in timeout function?
+static CO_ERR COCSdoUploadSubBlockResponse(CO_CSDO *csdo) {
+    CO_ERR    result = CO_ERR_SDO_SILENT;
+    uint32_t  ticks;
+    CO_IF_FRM frm;
+    uint8_t   cmd = 0;
+    uint8_t   blkSize = 0;
+
+    CO_SET_ID  (&frm, csdo->TxId       );
+    CO_SET_DLC (&frm, 8                );
+
+     /* clean frm data */
+    CO_SET_LONG(&frm, 0, 0u);
+    CO_SET_LONG(&frm, 0, 4u);
+
+    uint32_t bytesLeftBuf = csdo->BlkUp.size - csdo->BlkUp.index;
+    if (bytesLeftBuf > MAX_BLK_BYTES) {
+        blkSize = MAX_BLKSIZE;
+    } else {
+        blkSize = bytesLeftBuf / BLOCK_FRM_SEG_DATA_BYTE_SIZE;
+        if ((bytesLeftBuf % BLOCK_FRM_SEG_DATA_BYTE_SIZE) != 0) {
+            blkSize++;
+        }
+    }
+    cmd = WRITE_BITFIELD(CMD_CCS_BIT_OFFSET,
+                        CMD_CCS_MASK,
+                        CMD_CCS_BLOCK_UPLOAD);
+    cmd |= WRITE_BITFIELD(BLOCK_UPLOAD_CMD_CS_BIT_OFFSET,
+                        BLOCK_UPLOAD_CMD_CS_MASK,
+                        BLOCK_UPLOAD_CMD_CS_BLOCK_UPLOAD_RESPONSE);
+
+    CO_SET_BYTE(&frm, cmd, FRM_CMD_BYTE_OFFSET);
+    CO_SET_BYTE(&frm, csdo->BlkUp.SegNum, BLOCK_FRM_SEG_DATA_BYTE_OFFSET);
+    CO_SET_BYTE(&frm, blkSize, BLOCK_FRM_SUBBLOCK_BLKSIZE_BYTE_OFFSET);
+
+    /* refresh timer */
+    (void)COTmrDelete(&(csdo->Node->Tmr), csdo->Tfer.Tmr);
+    ticks = COTmrGetTicks(&(csdo->Node->Tmr), csdo->Tfer.Tmt, CO_TMR_UNIT_1MS);
+    csdo->Tfer.Tmr = COTmrCreate(&(csdo->Node->Tmr), ticks, 0, &COCSdoTimeout, csdo);
+
+    (void)COIfCanSend(&csdo->Node->If, &frm);
+    return result;
+}
+
+static CO_ERR COCSdoUploadSubBlock(CO_CSDO *csdo) 
+{
+    CO_ERR    result = CO_ERR_SDO_SILENT;
+    
+    uint8_t cmd = CO_GET_BYTE(csdo->Frm, FRM_CMD_BYTE_OFFSET);
+    uint8_t c = READ_BITFIELD(CMD_C_BIT_OFFSET, CMD_C_MASK, cmd);
+    uint8_t seqnum = READ_BITFIELD(CMD_SEQNUM_BIT_OFFSET, 
+                                    CMD_SEQNUM_MASK, 
+                                    cmd);
+    uint8_t numBytesRead = BLOCK_FRM_SEG_DATA_BYTE_SIZE;
+
+    if (seqnum == (csdo->BlkUp.SegNum + 1)) {
+        if (c == CMD_C_NO_MORE_SEGMENTS_TO_BE_DOWNLOADED) {
+            numBytesRead = csdo->BlkUp.size - csdo->BlkUp.index;
+            if (numBytesRead > BLOCK_FRM_SEG_DATA_BYTE_SIZE) {
+                numBytesRead = BLOCK_FRM_SEG_DATA_BYTE_SIZE;
+            }            
+        }
+        for (int i = 0; i < numBytesRead; i++) {
+            csdo->BlkUp.buf[csdo->BlkUp.index++] = CO_GET_BYTE(csdo->Frm, 
+                    BLOCK_FRM_SEG_DATA_BYTE_OFFSET + i);
+        }
+        csdo->BlkUp.SegNum++;
+        csdo->BlkUp.BytesLastSeg = numBytesRead;
+    } else {
+        // lost segment. skip until new sub-block starts
+        // TODO: reset timer if successful read? Anything to force sending response?
+        // TODO: send SDO read error?
+        result = CO_ERR_SDO_READ;
+    }
+    // when last segement received
+    // csdo->Block.State = BLOCK_STATE_END;
+    return result;
+}
+
+static CO_ERR COCSdoUploadEndBlock(CO_CSDO *csdo) {
+    CO_ERR    result = CO_ERR_SDO_SILENT;
+    uint32_t  ticks;
+    CO_IF_FRM frm;
+
+    uint8_t cmd = CO_GET_BYTE(csdo->Frm, FRM_CMD_BYTE_OFFSET);
+    uint8_t n = READ_BITFIELD(CMD_N_BIT_OFFSET, CMD_N_MASK, cmd);
+    
+    CO_SET_ID  (&frm, csdo->TxId       );
+    CO_SET_DLC (&frm, 8                );
+
+     /* clean frm data */
+    CO_SET_LONG(&frm, 0, 0u);
+    CO_SET_LONG(&frm, 0, 4u);
+
+    if ( (BLOCK_FRM_SEG_DATA_BYTE_SIZE - n) != csdo->BlkUp.BytesLastSeg) {
+        // number of bytes sent in final segment doesn't match number read, send abort
+        COCSdoAbort(csdo, CO_SDO_ERR_MEM); 
+        COCSdoTransferFinalize(csdo);
+        return CO_ERR_SDO_ABORT;
+    } 
+    if (csdo->BlkUp.CRC == GENERATE_CRC) {
+        uint16_t crcFromServer = CO_GET_WORD(csdo->Frm, BLOCK_FRM_CRC_BYTE_OFFSET);
+        uint16_t crcCalculated = 0; // TODO: calculate crc
+        if (crcFromServer != crcCalculated) {
+            // crc don't match send abort
+            COCSdoAbort(csdo, CO_SDO_ERR_CRC); 
+            COCSdoTransferFinalize(csdo);
+            return CO_ERR_SDO_ABORT;
+        }
+    }
+    cmd = WRITE_BITFIELD(CMD_CCS_BIT_OFFSET, 
+                        CMD_CCS_MASK,
+                        CMD_CCS_BLOCK_UPLOAD);
+    cmd |= WRITE_BITFIELD(BLOCK_UPLOAD_CMD_CS_BIT_OFFSET,
+                        BLOCK_UPLOAD_CMD_CS_MASK,
+                        BLOCK_UPLOAD_CMD_CS_END_BLOCK_UPLOAD_REQUEST);
+
+    CO_SET_BYTE(&frm, cmd, FRM_CMD_BYTE_OFFSET);
+
+    /* refresh timer */
+    (void)COTmrDelete(&(csdo->Node->Tmr), csdo->Tfer.Tmr);
+    ticks = COTmrGetTicks(&(csdo->Node->Tmr), csdo->Tfer.Tmt, CO_TMR_UNIT_1MS);
+    csdo->Tfer.Tmr = COTmrCreate(&(csdo->Node->Tmr), ticks, 0, &COCSdoTimeout, csdo);
+
+    (void)COIfCanSend(&csdo->Node->If, &frm);
+
+    COCSdoTransferFinalize(csdo);
+
+    return result;
+}
+
 static CO_ERR COCSdoInitDownloadSegmented(CO_CSDO *csdo)
 {
     CO_ERR    result = CO_ERR_SDO_SILENT;
@@ -500,7 +999,55 @@ CO_ERR COCSdoResponse(CO_CSDO *csdo)
         }
     }
 
-    if (csdo->Tfer.Type == CO_CSDO_TRANSFER_UPLOAD_SEGMENT) {
+    uint8_t scs = READ_BITFIELD(CMD_SCS_BIT_OFFSET,
+                                CMD_SCS_MASK, 
+                                cmd);
+
+    if (csdo->Tfer.Type == CO_CSDO_TRANSFER_UPLOAD_BLOCK) {
+        if (csdo->Block.State == BLOCK_STATE_TRANSFERRING) {
+            result = COCSdoUploadSubBlock(csdo);
+
+        } else if (scs == CMD_SCS_BLOCK_UPLOAD) {
+            uint8_t ss = READ_BITFIELD( BLOCK_UPLOAD_CMD_SS_BIT_OFFSET, 
+                                        BLOCK_UPLOAD_CMD_SS_MASK, 
+                                        cmd);
+            if (ss == BLOCK_UPLOAD_CMD_SS_INITIATE_UPLOAD_RESPONSE) {
+                result = COCSdoInitUploadBlock(csdo);
+            } else {
+                result = COCSdoUploadEndBlock(csdo);
+            }
+        } else if ((scs == CMD_SCS_INIT_UPLOAD) &&
+            (CMD_S_DATA_SET_SIZE_IS_INDICATED == READ_BITFIELD(NONBLOCK_CMD_S_BIT_OFFSET,
+                                                               CMD_S_MASK,
+                                                               cmd))) {
+            // server decided to switch to segmented upload
+            // TODO: make sure structure is properly initialized for segmented
+            csdo->Tfer.Type = CO_CSDO_TRANSFER_UPLOAD_SEGMENT;
+            result = COCSdoInitUploadSegmented(csdo);
+        } else {
+            COCSdoAbort(csdo, CO_SDO_ERR_CMD);
+            COCSdoTransferFinalize(csdo);
+        }
+    } else if (csdo->Tfer.Type == CO_CSDO_TRANSFER_DOWNLOAD_BLOCK) {
+        uint8_t ss = READ_BITFIELD( BLOCK_DOWNLOAD_CMD_SS_BIT_OFFSET, 
+                                    BLOCK_DOWNLOAD_CMD_SS_MASK, 
+                                    cmd);
+        if (scs == CMD_SCS_BLOCK_DOWNLOAD) {
+            if (ss == BLOCK_DOWNLOAD_CMD_SS_INITIATE_DOWNLOAD_RESPONSE) {
+                result = COCSdoInitDownloadBlock(csdo);
+            } else if (ss == BLOCK_DOWNLOAD_CMD_SS_BLOCK_DOWNLOAD_RESPONSE) {
+                result = COCSdoDownloadBlock(csdo);
+            } else if (ss == BLOCK_DOWNLOAD_CMD_SS_END_BLOCK_DOWNLOAD_RESPONSE) {
+                result = COCSdoDownloadBlockEnd(csdo);
+            } else {
+                COCSdoAbort(csdo, CO_SDO_ERR_CMD);
+                COCSdoTransferFinalize(csdo);
+            }
+        } else {
+            COCSdoAbort(csdo, CO_SDO_ERR_CMD);
+            COCSdoTransferFinalize(csdo);
+        }
+     } else if (csdo->Tfer.Type == CO_CSDO_TRANSFER_UPLOAD_SEGMENT) {
         if (cmd == 0x41u) {
             (void)COCSdoInitUploadSegmented(csdo);
         } else if ((cmd & 0xE0u) == 0x00u) {
@@ -561,10 +1108,36 @@ CO_ERR COCSdoRequestUpload(CO_CSDO *csdo,
                            uint8_t *buf,
                            uint32_t size,
                            CO_CSDO_CALLBACK_T callback,
-                           uint32_t timeout)
+                           uint32_t timeout){
+    return COCSdoRequestUploadFull(csdo, key, buf, size, callback, timeout, false, false, 0, 0);
+}
+
+CO_ERR COCSdoRequestUploadBlock(CO_CSDO *csdo,
+                           uint32_t key,
+                           uint8_t *buf,
+                           uint32_t size,
+                           CO_CSDO_CALLBACK_T callback,
+                           uint32_t timeout,
+                           bool crc,
+                           uint8_t blksize,
+                           uint8_t pst){
+    return COCSdoRequestUploadFull(csdo, key, buf, size, callback, timeout, true, crc, blksize, pst);
+}
+
+CO_ERR COCSdoRequestUploadFull(CO_CSDO *csdo,
+                           uint32_t key,
+                           uint8_t *buf,
+                           uint32_t size,
+                           CO_CSDO_CALLBACK_T callback,
+                           uint32_t timeout,
+                           bool block,
+                           bool crc,
+                           uint8_t blksize,
+                           uint8_t pst)
 {
     CO_IF_FRM frm;
     uint32_t  ticks;
+    uint8_t   cmd;
 
     ASSERT_PTR_ERR(csdo, CO_ERR_BAD_ARG);
     ASSERT_PTR_ERR(buf, CO_ERR_BAD_ARG);
@@ -589,30 +1162,68 @@ CO_ERR COCSdoRequestUpload(CO_CSDO *csdo,
     csdo->State = CO_CSDO_STATE_BUSY;
 
     /* Update transfer info */
-    if (size <= (uint32_t)4) {
-        /* expedited transfer */
-        csdo->Tfer.Type = CO_CSDO_TRANSFER_UPLOAD;
-    } else {
-        /* segmented transfer */
-        csdo->Tfer.Type = CO_CSDO_TRANSFER_UPLOAD_SEGMENT;
-    }
-    csdo->Tfer.Abort   = 0;
-    csdo->Tfer.Idx     = CO_GET_IDX(key);
-    csdo->Tfer.Sub     = CO_GET_SUB(key);
-    csdo->Tfer.Buf     = buf;
-    csdo->Tfer.Size    = size;
-    csdo->Tfer.Tmt     = timeout;
-    csdo->Tfer.Call    = callback;
-    csdo->Tfer.Buf_Idx = 0;
-    csdo->Tfer.TBit    = 0;
+    if (block == true) {
+        // create and send first block upload frame
+        cmd = WRITE_BITFIELD(
+                        CMD_CCS_BIT_OFFSET,
+                        CMD_CCS_MASK,
+                        CMD_CCS_BLOCK_UPLOAD);
+        if (crc == true) {
+            cmd |= WRITE_BITFIELD(
+                         CMD_CC_BIT_OFFSET,                                                           
+                         CMD_CC_MASK,                                   
+                         CMD_CC_CLIENT_SUPPORTS_CRC_GENERATION);
+        } else {
+            cmd |= WRITE_BITFIELD(
+                         CMD_CC_BIT_OFFSET,                                                           
+                         CMD_CC_MASK,                                   
+                         CMD_CC_CLIENT_DOES_NOT_SUPPORT_CRC_GENERATION);
+        }
+        cmd |= WRITE_BITFIELD(
+                         BLOCK_UPLOAD_CMD_CS_BIT_OFFSET,             
+                         BLOCK_UPLOAD_CMD_CS_MASK,                    
+                         BLOCK_UPLOAD_CMD_CS_INITIATE_UPLOAD_REQUEST);
+        
+        csdo->Tfer.Type = CO_CSDO_TRANSFER_UPLOAD_BLOCK;
+        csdo->Block.State = BLOCK_STATE_INIT;
+        
+        /* Transmit transfer initiation directly */
+        CO_SET_ID  (&frm, csdo->TxId        );
+        CO_SET_DLC (&frm, 8u                );
+        CO_SET_BYTE(&frm, cmd,              FRM_CMD_BYTE_OFFSET);
+        CO_SET_WORD(&frm, csdo->Tfer.Idx,   1u);
+        CO_SET_BYTE(&frm, csdo->Tfer.Sub,   3u);
+        CO_SET_BYTE(&frm, blksize,          BLOCK_INIT_FRM_BLKSIZE_BYTE_OFFSET);
+        CO_SET_BYTE(&frm, pst,              BLOCK_FRM_PST_BYTE_OFFSET);
+        CO_SET_WORD(&frm, 0,                6u);
 
-    /* Transmit transfer initiation directly */
-    CO_SET_ID  (&frm, csdo->TxId        );
-    CO_SET_DLC (&frm, 8u                );
-    CO_SET_BYTE(&frm, 0x40          , 0u);
-    CO_SET_WORD(&frm, csdo->Tfer.Idx, 1u);
-    CO_SET_BYTE(&frm, csdo->Tfer.Sub, 3u);
-    CO_SET_LONG(&frm, 0,              4u);
+    } else {
+        if (size <= (uint32_t)4) {
+            /* expedited transfer */
+            csdo->Tfer.Type = CO_CSDO_TRANSFER_UPLOAD;
+        } else {
+            /* segmented transfer */
+            csdo->Tfer.Type = CO_CSDO_TRANSFER_UPLOAD_SEGMENT;
+        }
+   
+        csdo->Tfer.Abort   = 0;
+        csdo->Tfer.Idx     = CO_GET_IDX(key);
+        csdo->Tfer.Sub     = CO_GET_SUB(key);
+        csdo->Tfer.Buf     = buf;
+        csdo->Tfer.Size    = size;
+        csdo->Tfer.Tmt     = timeout;
+        csdo->Tfer.Call    = callback;
+        csdo->Tfer.Buf_Idx = 0;
+        csdo->Tfer.TBit    = 0;
+
+        /* Transmit transfer initiation directly */
+        CO_SET_ID  (&frm, csdo->TxId        );
+        CO_SET_DLC (&frm, 8u                );
+        CO_SET_BYTE(&frm, 0x40          , 0u);
+        CO_SET_WORD(&frm, csdo->Tfer.Idx, 1u);
+        CO_SET_BYTE(&frm, csdo->Tfer.Sub, 3u);
+        CO_SET_LONG(&frm, 0,              4u);
+    }
 
     ticks = COTmrGetTicks(&(csdo->Node->Tmr), timeout, CO_TMR_UNIT_1MS);
     csdo->Tfer.Tmr = COTmrCreate(&(csdo->Node->Tmr), ticks, 0, &COCSdoTimeout, csdo);
@@ -622,12 +1233,35 @@ CO_ERR COCSdoRequestUpload(CO_CSDO *csdo,
     return CO_ERR_NONE;
 }
 
+// legacy segmented / expedited
 CO_ERR COCSdoRequestDownload(CO_CSDO *csdo,
                              uint32_t key,
                              uint8_t *buffer,
                              uint32_t size,
                              CO_CSDO_CALLBACK_T callback,
-                             uint32_t timeout)
+                             uint32_t timeout) {
+    return COCSdoRequestDownloadFull(csdo, key, buffer, size, callback, timeout, false, false);
+}
+
+// block download
+CO_ERR COCSdoRequestDownloadBlock(CO_CSDO *csdo,
+                             uint32_t key,
+                             uint8_t *buffer,
+                             uint32_t size,
+                             CO_CSDO_CALLBACK_T callback,
+                             uint32_t timeout,
+                             bool crc) {
+    return COCSdoRequestDownloadFull(csdo, key, buffer, size, callback, timeout, true, crc);
+}
+
+static CO_ERR COCSdoRequestDownloadFull(CO_CSDO *csdo,
+                             uint32_t key,
+                             uint8_t *buffer,
+                             uint32_t size,
+                             CO_CSDO_CALLBACK_T callback,
+                             uint32_t timeout,
+                             bool block,
+                             bool crc)
 {
     CO_IF_FRM frm;
     uint8_t   cmd;
@@ -668,7 +1302,34 @@ CO_ERR COCSdoRequestDownload(CO_CSDO *csdo,
     csdo->Tfer.Buf_Idx = 0;
     csdo->Tfer.TBit    = 0;
 
-    if (size <= (uint32_t)4u) {
+    if (block== true) {
+        csdo->Tfer.Type = CO_CSDO_TRANSFER_DOWNLOAD_BLOCK;
+        
+        cmd = (uint8_t)WRITE_BITFIELD(   CMD_CCS_BIT_OFFSET,
+                                CMD_CCS_MASK,
+                                CMD_CCS_BLOCK_DOWNLOAD);
+        if (crc == true) {
+            cmd |= (uint8_t)WRITE_BITFIELD(  
+                                    CMD_CC_BIT_OFFSET,
+                                    CMD_CC_MASK,
+                                    CMD_CC_CLIENT_SUPPORTS_CRC_GENERATION);
+        } else {
+            cmd |= (uint8_t)WRITE_BITFIELD(   
+                                    CMD_CC_BIT_OFFSET,
+                                    CMD_CC_MASK,
+                                    CMD_CC_CLIENT_DOES_NOT_SUPPORT_CRC_GENERATION);
+        }
+        cmd |= (uint8_t)WRITE_BITFIELD(  CMD_S_BIT_OFFSET,
+                                CMD_S_MASK,
+                                CMD_S_DATA_SET_SIZE_IS_INDICATED);
+
+        cmd |= (uint8_t)WRITE_BITFIELD(  BLOCK_DOWNLOAD_CMD_CS_BIT_OFFSET,
+                                BLOCK_DOWNLOAD_CMD_CS_MASK,
+                                BLOCK_DOWNLOAD_CMD_CS_INITIATE_DOWNLOAD_REQUEST);
+        // set the size bytes
+        CO_SET_LONG(&frm, size, BLOCK_FRM_SIZE_BYTE_OFFSET);
+    }
+    else if (size <= (uint32_t)4u) {
         csdo->Tfer.Type = CO_CSDO_TRANSFER_DOWNLOAD;
 
         cmd = ((0x23u) | ((4u - (uint8_t)size) << 2u));
